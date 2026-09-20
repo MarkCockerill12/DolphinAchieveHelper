@@ -32,7 +32,7 @@ namespace DolphinAchiever
             public DescriptionMode Descriptions = DescriptionMode.Hover;
             public bool ExitWithDolphin = true;
             public bool Demo;
-            public bool NoFullscreenHotkey;
+            public bool FullscreenHotkey;   // opt-in; off by default
         }
 
         public static string DataDir
@@ -135,7 +135,7 @@ namespace DolphinAchiever
             }
 
             HotkeyWindow hotkey = null;
-            if (!_opt.NoFullscreenHotkey)
+            if (_opt.FullscreenHotkey)
             {
                 hotkey = new HotkeyWindow(delegate
                 {
@@ -200,7 +200,7 @@ namespace DolphinAchiever
                         break;
                     case "--stay": o.ExitWithDolphin = false; break;
                     case "--demo": o.Demo = true; break;
-                    case "--no-fs-hotkey": o.NoFullscreenHotkey = true; break;
+                    case "--fs-hotkey": o.FullscreenHotkey = true; break;
                     case "--settle":
                         if (i + 1 < args.Length)
                             double.TryParse(args[++i], NumberStyles.Any, CultureInfo.InvariantCulture, out o.Settle);

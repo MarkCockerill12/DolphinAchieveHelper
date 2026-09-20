@@ -34,7 +34,6 @@ param(
     [ValidateRange(0, 3)][int]$Corner = 3,
     [ValidateRange(2, 60)][double]$Seconds = 7,
     [ValidateSet('hover','always','never')][string]$Text = 'hover',
-    [switch]$NoFullscreenFix,
     [switch]$NoShortcut
 )
 
@@ -200,19 +199,10 @@ if (Update-Ini $loggerIni @(
     Warn "Logger.ini not found. Start Dolphin once, then re-run this installer."
 }
 
-# ------------------------------------------------- make fullscreen work
-# Dolphin's default Direct3D backend takes *exclusive* fullscreen, which draws
-# straight to the display and hides every other window, including this overlay.
-# Borderless fullscreen looks and performs the same but composites normally.
-if (-not $NoFullscreenFix) {
-    $gfxIni = Join-Path $userDir 'Config\GFX.ini'
-    if (Update-Ini $gfxIni @(@{ Section = 'Settings'; Key = 'BorderlessFullscreen'; Value = 'True' })) {
-        Ok "Set Dolphin to borderless fullscreen so the overlay is visible in-game"
-    } else {
-        Warn "GFX.ini not found; if the overlay is invisible in fullscreen, turn on"
-        Warn "Graphics > Advanced > Borderless Fullscreen in Dolphin."
-    }
-}
+# Note: Dolphin's "Borderless Fullscreen" option is not set here. It looks like it
+# would help, but bBorderlessFullscreen is written to the config and never read by any
+# video backend, so it does nothing. Dolphin's fullscreen is exclusive on both Vulkan
+# and D3D, and no overlay can draw over exclusive fullscreen.
 
 # --------------------------------------------------- check RA is set up
 $raIni = Join-Path $userDir 'Config\RetroAchievements.ini'
