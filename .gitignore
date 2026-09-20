@@ -1,0 +1,13 @@
+# build output
+*.exe
+*.pdb
+obj/
+bin/
+
+# cached RetroAchievements data pulled at runtime / during testing
+tools/patch_*.json
+data/
+*.log
+
+# local backups
+*.achiever-backup
