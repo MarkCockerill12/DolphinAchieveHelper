@@ -167,6 +167,9 @@ namespace DolphinAchiever
                 SetWindowPos(h, IntPtr.Zero, _savedRect.X, _savedRect.Y,
                              _savedRect.Width, _savedRect.Height,
                              SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                // Keep Dolphin focused on the way out too, otherwise the next Alt+Enter
+                // does nothing until the window is clicked.
+                SetForegroundWindow(h);
                 return false;
             }
 

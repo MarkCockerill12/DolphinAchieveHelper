@@ -1,0 +1,74 @@
+diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
+index 88af95f..1eaa4d0 100644
+--- a/Source/Core/Core/AchievementManager.cpp
++++ b/Source/Core/Core/AchievementManager.cpp
+@@ -683,6 +683,13 @@ AchievementManager::GetActiveChallenges() const
+   return m_active_challenges;
+ }
+ 
++const rc_client_achievement_t* AchievementManager::GetAchievementInfo(AchievementId id)
++{
++  if (!m_client)
++    return nullptr;
++  return rc_client_get_achievement_info(m_client, id);
++}
++
+ std::vector<std::string> AchievementManager::GetActiveLeaderboards() const
+ {
+   if (!Config::Get(Config::RA_LEADERBOARD_TRACKER_ENABLED))
+diff --git a/Source/Core/Core/AchievementManager.h b/Source/Core/Core/AchievementManager.h
+index 74f26b9..5b32cb5 100644
+--- a/Source/Core/Core/AchievementManager.h
++++ b/Source/Core/Core/AchievementManager.h
+@@ -162,6 +162,9 @@ public:
+   bool AreChallengesUpdated() const;
+   void ResetChallengesUpdated();
+   const std::unordered_set<AchievementId>& GetActiveChallenges() const;
++  // Title/description for an achievement, so the challenge indicators can label
++  // themselves instead of showing a bare badge.
++  const rc_client_achievement_t* GetAchievementInfo(AchievementId id);
+   std::vector<std::string> GetActiveLeaderboards() const;
+ 
+ #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
+diff --git a/Source/Core/VideoCommon/OnScreenUI.cpp b/Source/Core/VideoCommon/OnScreenUI.cpp
+index 209e96c..ea15c49 100644
+--- a/Source/Core/VideoCommon/OnScreenUI.cpp
++++ b/Source/Core/VideoCommon/OnScreenUI.cpp
+@@ -382,11 +382,36 @@ void OnScreenUI::DrawChallengesAndLeaderboards()
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav |
+                          ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing))
+     {
+-      for (auto& [name, texture] : m_challenge_texture_map)
++      // Each active challenge gets a row: badge, then its name and how to earn it.
++      // Without the text the indicator is just an unlabelled icon.
++      const float text_width = 22.0f * ImGui::GetFontSize();
++      bool first_row = true;
++      for (auto& [id, texture] : m_challenge_texture_map)
+       {
++        if (!first_row)
++          ImGui::Spacing();
++        first_row = false;
++
+         ImGui::Image(*texture.get(), ImVec2(static_cast<float>(texture->GetWidth()) * scale,
+                                             static_cast<float>(texture->GetHeight()) * scale));
++
++        const auto* info = instance.GetAchievementInfo(static_cast<u32>(id));
++        if (info == nullptr)
++          continue;
++
+         ImGui::SameLine();
++        ImGui::BeginGroup();
++        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + text_width);
++        if (info->title != nullptr)
++          ImGui::TextUnformatted(info->title);
++        if (info->description != nullptr)
++        {
++          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.76f, 0.84f, 1.0f));
++          ImGui::TextUnformatted(info->description);
++          ImGui::PopStyleColor();
++        }
++        ImGui::PopTextWrapPos();
++        ImGui::EndGroup();
+       }
+     }
+     leaderboard_y -= ImGui::GetWindowHeight();
