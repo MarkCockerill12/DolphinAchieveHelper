@@ -32,6 +32,9 @@ windowed or fullscreen.
 `DolphinAchiever.exe --demo` shows a sample panel so you can check placement without
 playing.
 
+The overlay is per-monitor DPI aware, so it renders at native resolution on scaled
+displays instead of being bitmap-stretched.
+
 ## Design goals
 
 - **Never modifies Dolphin.** Nothing is written into the Dolphin program folder, so
@@ -207,9 +210,14 @@ the discovered keys, per-level matches and an accuracy estimate for any set.
 ## Limitations
 
 - **Windows only** — it uses `ReadProcessMemory` and Win32 layered windows.
-- **Exclusive fullscreen** hides every overlay. The installer therefore turns on
-  Dolphin's `BorderlessFullscreen` setting, which looks and performs the same but
-  composites normally. Pass `-NoFullscreenFix` to leave it alone.
+- **Exclusive fullscreen hides every overlay**, and Dolphin's fullscreen *is* exclusive:
+  the Vulkan backend calls `vkAcquireFullScreenExclusiveModeEXT`, and D3D calls
+  `IDXGISwapChain::SetFullscreenState`. Dolphin's own "Borderless Fullscreen" option
+  cannot help - `bBorderlessFullscreen` is written to the config but **never read by any
+  backend**. So the overlay takes over **Alt+Enter** itself (a system-wide hotkey, so
+  Dolphin never sees the key and never requests exclusive mode) and instead strips
+  Dolphin's window border and sizes it to the monitor. Same appearance, but it
+  composites, so the overlay is visible. Pass `--no-fs-hotkey` to disable.
 - A game whose achievement set never tests a shared location variable can't be mapped.
   The overlay says so in its log and stays quiet rather than guessing.
 - If Dolphin runs elevated, run the overlay elevated too, or it cannot read its memory.

@@ -198,11 +198,14 @@ namespace DolphinAchiever
             if (_fBody != null) _fBody.Dispose();
             if (_fSmall != null) _fSmall.Dispose();
 
-            _fHeader = new Font("Segoe UI Semibold", 9.5f * scale, FontStyle.Bold, GraphicsUnit.Point);
-            _fNote = new Font("Segoe UI", 7.75f * scale, FontStyle.Regular, GraphicsUnit.Point);
-            _fRow = new Font("Segoe UI", 9f * scale, FontStyle.Regular, GraphicsUnit.Point);
-            _fBody = new Font("Segoe UI", 8.25f * scale, FontStyle.Regular, GraphicsUnit.Point);
-            _fSmall = new Font("Segoe UI", 7.75f * scale, FontStyle.Regular, GraphicsUnit.Point);
+            // Pixel units, not points: the layout constants are in pixels and already
+            // carry the scale factor. Points would be re-scaled by the device DPI on
+            // top of that, making the text several times too big on a high-DPI screen.
+            _fHeader = new Font("Segoe UI Semibold", 12.7f * scale, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fNote = new Font("Segoe UI", 10.3f * scale, FontStyle.Regular, GraphicsUnit.Pixel);
+            _fRow = new Font("Segoe UI", 12f * scale, FontStyle.Regular, GraphicsUnit.Pixel);
+            _fBody = new Font("Segoe UI", 11f * scale, FontStyle.Regular, GraphicsUnit.Pixel);
+            _fSmall = new Font("Segoe UI", 10.3f * scale, FontStyle.Regular, GraphicsUnit.Pixel);
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -283,10 +286,13 @@ namespace DolphinAchiever
                 try { t = TargetProvider(); } catch { }
                 if (t.HasValue && t.Value.Width > 120 && t.Value.Height > 90) wa = t.Value;
             }
+            // Size everything from the height of Dolphin's picture, in real pixels.
+            // DPI is already accounted for: the process is DPI-aware, so this rect is
+            // in physical pixels and the panel comes out crisp at any scaling factor.
             float sizeFactor = wa.Height / ReferenceHeight;
             if (sizeFactor < 0.6f) sizeFactor = 0.6f;
-            if (sizeFactor > 1.6f) sizeFactor = 1.6f;
-            ApplyScale(_dpiScale * sizeFactor);
+            if (sizeFactor > 3.0f) sizeFactor = 3.0f;
+            ApplyScale(sizeFactor);
 
             int panelW = S(PanelWidth, _scale);
             int margin = S(EdgeMargin, _scale);

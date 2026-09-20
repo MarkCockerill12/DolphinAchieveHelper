@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -31,6 +32,7 @@ namespace DolphinAchiever
             public DescriptionMode Descriptions = DescriptionMode.Hover;
             public bool ExitWithDolphin = true;
             public bool Demo;
+            public bool NoFullscreenHotkey;
         }
 
         public static string DataDir
@@ -53,9 +55,29 @@ namespace DolphinAchiever
             catch { }
         }
 
+        [DllImport("user32.dll")]
+        static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+        [DllImport("user32.dll")]
+        static extern bool SetProcessDPIAware();
+
+        // Must run before any window or Graphics object exists. Without it Windows
+        // renders the overlay at the scaled-down logical resolution and stretches the
+        // bitmap up, which looks badly pixelated on a high-DPI display.
+        static void EnableDpiAwareness()
+        {
+            try
+            {
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+                if (SetProcessDpiAwarenessContext(new IntPtr(-4))) return;
+            }
+            catch { }
+            try { SetProcessDPIAware(); } catch { }
+        }
+
         [STAThread]
         static int Main(string[] args)
         {
+            EnableDpiAwareness();
             _opt = ParseArgs(args);
 
             DolphinInstall install = _opt.DolphinExe != null
@@ -112,11 +134,28 @@ namespace DolphinAchiever
                 _toast.Push(demo);
             }
 
+            HotkeyWindow hotkey = null;
+            if (!_opt.NoFullscreenHotkey)
+            {
+                hotkey = new HotkeyWindow(delegate
+                {
+                    if (_dolphinPid == 0) return;
+                    bool on = DolphinWindow.ToggleBorderless(_dolphinPid);
+                    Log(on ? "Borderless fullscreen on" : "Borderless fullscreen off");
+                });
+                Log(hotkey.Registered
+                    ? "Alt+Enter captured for borderless fullscreen."
+                    : "WARNING: could not capture Alt+Enter (already taken by another app).");
+            }
+
             var worker = new Thread(delegate () { Run(install); });
             worker.IsBackground = true;
             worker.Start();
 
             Application.Run();
+
+            DolphinWindow.RestoreIfBorderless();
+            if (hotkey != null) hotkey.Dispose();
             return 0;
         }
 
@@ -161,6 +200,7 @@ namespace DolphinAchiever
                         break;
                     case "--stay": o.ExitWithDolphin = false; break;
                     case "--demo": o.Demo = true; break;
+                    case "--no-fs-hotkey": o.NoFullscreenHotkey = true; break;
                     case "--settle":
                         if (i + 1 < args.Length)
                             double.TryParse(args[++i], NumberStyles.Any, CultureInfo.InvariantCulture, out o.Settle);

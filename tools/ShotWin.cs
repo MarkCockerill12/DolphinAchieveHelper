@@ -9,7 +9,9 @@ class ShotWin{
  [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
  delegate bool EnumProc(IntPtr h, IntPtr p);
  [StructLayout(LayoutKind.Sequential)] struct RECT{public int L,T,R,B;}
+ [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
  static void Main(string[] a){
+  SetProcessDPIAware();
   string proc=a[0]; string outp=a[1];
   var pids=new List<uint>();
   foreach(Process p in Process.GetProcessesByName(proc)) pids.Add((uint)p.Id);
