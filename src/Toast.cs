@@ -145,8 +145,18 @@ namespace DolphinAchiever
         const int HeaderH = 24;
         const int IconSize = 22;
 
-        float _scale = 1f;
+        float _scale = 1f;          // dpi scale * size factor; applied to every dimension
+        float _dpiScale = 1f;
         Font _fHeader, _fNote, _fRow, _fBody, _fSmall;
+
+        // Supplies the screen rect Dolphin is rendering into, so the panel can sit in
+        // the corner of the game rather than the corner of the desktop. Returning null
+        // falls back to the desktop work area.
+        public Func<Rectangle?> TargetProvider;
+
+        // Panel size is defined against this reference height and scaled from there, so
+        // it keeps the same proportions whether Dolphin is windowed or fullscreen.
+        const float ReferenceHeight = 800f;
 
         public int CornerIndex = 3;     // 0=TL 1=TR 2=BL 3=BR
         public DescriptionMode Descriptions = DescriptionMode.Hover;
@@ -160,12 +170,8 @@ namespace DolphinAchiever
             TopMost = true;
             Visible = false;
 
-            using (Graphics g = CreateGraphics()) _scale = g.DpiX / 96f;
-            _fHeader = new Font("Segoe UI Semibold", 9.5f * _scale, FontStyle.Bold, GraphicsUnit.Point);
-            _fNote = new Font("Segoe UI", 7.75f * _scale, FontStyle.Regular, GraphicsUnit.Point);
-            _fRow = new Font("Segoe UI", 9f * _scale, FontStyle.Regular, GraphicsUnit.Point);
-            _fBody = new Font("Segoe UI", 8.25f * _scale, FontStyle.Regular, GraphicsUnit.Point);
-            _fSmall = new Font("Segoe UI", 7.75f * _scale, FontStyle.Regular, GraphicsUnit.Point);
+            using (Graphics g = CreateGraphics()) _dpiScale = g.DpiX / 96f;
+            ApplyScale(_dpiScale);
 
             Bounds = new Rectangle(-10000, -10000, 1, 1);
 
@@ -176,6 +182,27 @@ namespace DolphinAchiever
                 catch (Exception ex) { LastError = ex.ToString(); }
             };
             _timer.Start();
+        }
+
+        // Rebuild the fonts when the scale changes enough to matter.
+        void ApplyScale(float scale)
+        {
+            if (scale < 0.35f) scale = 0.35f;
+            if (scale > 3f) scale = 3f;
+            if (_fHeader != null && Math.Abs(scale - _scale) < 0.02f) return;
+            _scale = scale;
+
+            if (_fHeader != null) _fHeader.Dispose();
+            if (_fNote != null) _fNote.Dispose();
+            if (_fRow != null) _fRow.Dispose();
+            if (_fBody != null) _fBody.Dispose();
+            if (_fSmall != null) _fSmall.Dispose();
+
+            _fHeader = new Font("Segoe UI Semibold", 9.5f * scale, FontStyle.Bold, GraphicsUnit.Point);
+            _fNote = new Font("Segoe UI", 7.75f * scale, FontStyle.Regular, GraphicsUnit.Point);
+            _fRow = new Font("Segoe UI", 9f * scale, FontStyle.Regular, GraphicsUnit.Point);
+            _fBody = new Font("Segoe UI", 8.25f * scale, FontStyle.Regular, GraphicsUnit.Point);
+            _fSmall = new Font("Segoe UI", 7.75f * scale, FontStyle.Regular, GraphicsUnit.Point);
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -248,7 +275,19 @@ namespace DolphinAchiever
             POINT cur;
             if (!GetCursorPos(out cur)) { cur.x = -1; cur.y = -1; }
 
+            // Anchor inside Dolphin's picture, and size the panel relative to it.
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            if (TargetProvider != null)
+            {
+                Rectangle? t = null;
+                try { t = TargetProvider(); } catch { }
+                if (t.HasValue && t.Value.Width > 120 && t.Value.Height > 90) wa = t.Value;
+            }
+            float sizeFactor = wa.Height / ReferenceHeight;
+            if (sizeFactor < 0.6f) sizeFactor = 0.6f;
+            if (sizeFactor > 1.6f) sizeFactor = 1.6f;
+            ApplyScale(_dpiScale * sizeFactor);
+
             int panelW = S(PanelWidth, _scale);
             int margin = S(EdgeMargin, _scale);
             int shadow = S(14, _scale);

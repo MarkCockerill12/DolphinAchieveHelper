@@ -16,6 +16,7 @@ namespace DolphinAchiever
         static Options _opt;
         static readonly Dictionary<string, Image> _icons = new Dictionary<string, Image>();
         static HashSet<int> _lastLevelIds = new HashSet<int>();
+        static volatile int _dolphinPid;
 
         class Options
         {
@@ -29,6 +30,7 @@ namespace DolphinAchiever
             public double Settle = 1.5;
             public DescriptionMode Descriptions = DescriptionMode.Hover;
             public bool ExitWithDolphin = true;
+            public bool Demo;
         }
 
         public static string DataDir
@@ -92,8 +94,23 @@ namespace DolphinAchiever
             _toast = new ToastWindow
             {
                 CornerIndex = _opt.Corner,
-                Descriptions = _opt.Descriptions
+                Descriptions = _opt.Descriptions,
+                // Keep the panel inside Dolphin's picture rather than the desktop corner.
+                TargetProvider = delegate { return DolphinWindow.GetRenderArea(_dolphinPid); }
             };
+
+            if (_opt.Demo)
+            {
+                // Sample panel for checking placement and size without playing.
+                var demo = new Notice { Header = "Good Egg Galaxy", HeaderNote = "3 left", Seconds = _opt.Seconds };
+                demo.Rows.Add(new NoticeRow { Title = "Sunny Side Up", Corner = "10",
+                    Body = "Complete \"Purple Coin Omelet\" in Good Egg Galaxy in under 1 minute and 30 seconds." });
+                demo.Rows.Add(new NoticeRow { Title = "Kalimari Koins", Corner = "10", Missable = true,
+                    Body = "Collect 15 coins during the battle with King Kaliente in Good Egg Galaxy." });
+                demo.Rows.Add(new NoticeRow { Title = "Up, Up, and Away", Corner = "5",
+                    Body = "Obtain the star in \"Luigi on the Roof\" without entering the orange pipe." });
+                _toast.Push(demo);
+            }
 
             var worker = new Thread(delegate () { Run(install); });
             worker.IsBackground = true;
@@ -143,6 +160,7 @@ namespace DolphinAchiever
                         if (i + 1 < args.Length) int.TryParse(args[++i], out o.MaxToasts);
                         break;
                     case "--stay": o.ExitWithDolphin = false; break;
+                    case "--demo": o.Demo = true; break;
                     case "--settle":
                         if (i + 1 < args.Length)
                             double.TryParse(args[++i], NumberStyles.Any, CultureInfo.InvariantCulture, out o.Settle);
@@ -252,12 +270,14 @@ namespace DolphinAchiever
                                 return;
                             }
                             game = null; matcher = null; rp = null; eval = null;
+                            _dolphinPid = 0;
                             loadedGameId = 0;
                             lastLevel = lastSection = null;
                             Thread.Sleep(1500);
                             continue;
                         }
                         sawDolphin = true;
+                        _dolphinPid = mem.ProcessId;
                         if (attachedAt == DateTime.MinValue)
                         {
                             attachedAt = DateTime.UtcNow;

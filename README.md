@@ -25,7 +25,12 @@ too. Already-earned achievements are filtered out, and missables are highlighted
 sorted first.
 
 It is meant to sit alongside Dolphin's own achievement notifications, not compete with
-them: same corner, same scale, gone in a few seconds.
+them: same corner, same scale, gone in a few seconds. The panel anchors to **Dolphin's
+picture**, not the desktop, and scales with it — so it stays put whether Dolphin is
+windowed or fullscreen.
+
+`DolphinAchiever.exe --demo` shows a sample panel so you can check placement without
+playing.
 
 ## Design goals
 
