@@ -216,7 +216,7 @@ if (Test-Path $raIni) {
 
 # ------------------------------------------------------------------ shortcuts
 if (-not $NoShortcut) {
-    $args = "--launch --dolphin `"$dolphinExe`" --corner $Corner --seconds $Seconds --text $Text --fs-hotkey"
+    $args = "--launch --dolphin `"$dolphinExe`" --corner $Corner --seconds $Seconds --text $Text"
     $ws = New-Object -ComObject WScript.Shell
     $targets = @(
         (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Dolphin (Achievements).lnk'),

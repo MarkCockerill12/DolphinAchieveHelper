@@ -30,6 +30,34 @@ index 74f26b9..5b32cb5 100644
    std::vector<std::string> GetActiveLeaderboards() const;
  
  #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
+diff --git a/Source/Core/DolphinQt/MainWindow.cpp b/Source/Core/DolphinQt/MainWindow.cpp
+index 688ae6f..e316d1f 100644
+--- a/Source/Core/DolphinQt/MainWindow.cpp
++++ b/Source/Core/DolphinQt/MainWindow.cpp
+@@ -1106,10 +1106,23 @@ void MainWindow::FullScreen()
+   if (was_fullscreen)
+   {
+     ShowRenderWidget();
++
++    // Leaving fullscreen re-parents the render widget but never activates anything,
++    // so the window was left unfocused and the next Alt+Enter was ignored until the
++    // user clicked on it. Give focus back explicitly.
++    QWidget* const target = Config::Get(Config::MAIN_RENDER_TO_MAIN) ?
++                                static_cast<QWidget*>(this) :
++                                static_cast<QWidget*>(m_render_widget);
++    target->raise();
++    target->activateWindow();
++    m_render_widget->setFocus();
++    Host::GetInstance()->SetRenderFocus(target->isActiveWindow());
+   }
+   else
+   {
+     m_render_widget->showFullScreen();
++    m_render_widget->activateWindow();
++    m_render_widget->setFocus();
+   }
+ }
+ 
 diff --git a/Source/Core/VideoCommon/OnScreenUI.cpp b/Source/Core/VideoCommon/OnScreenUI.cpp
 index 209e96c..ea15c49 100644
 --- a/Source/Core/VideoCommon/OnScreenUI.cpp
