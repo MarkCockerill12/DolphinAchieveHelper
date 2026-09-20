@@ -128,6 +128,46 @@ namespace DolphinAchiever
         [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO mi);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hwnd, int cmd);
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+        [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+
+        const int SW_SHOW = 5;
+
+        // Windows refuses SetForegroundWindow from a process that is not already in the
+        // foreground, which is exactly our situation: the user pressed a hotkey while
+        // Dolphin had focus. Briefly attaching our input queue to the foreground thread
+        // and to Dolphin's lifts that restriction, which is the standard workaround.
+        static void ForceForeground(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            IntPtr fg = GetForegroundWindow();
+            if (fg == hwnd) return;
+
+            uint ignored;
+            uint fgThread = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, out ignored);
+            uint targetThread = GetWindowThreadProcessId(hwnd, out ignored);
+            uint thisThread = GetCurrentThreadId();
+
+            bool attachedFg = fgThread != 0 && fgThread != thisThread &&
+                              AttachThreadInput(thisThread, fgThread, true);
+            bool attachedTarget = targetThread != thisThread &&
+                                  AttachThreadInput(thisThread, targetThread, true);
+            try
+            {
+                ShowWindow(hwnd, SW_SHOW);
+                BringWindowToTop(hwnd);
+                SetForegroundWindow(hwnd);
+                SetFocus(hwnd);
+            }
+            finally
+            {
+                if (attachedTarget) AttachThreadInput(thisThread, targetThread, false);
+                if (attachedFg) AttachThreadInput(thisThread, fgThread, false);
+            }
+        }
 
         static IntPtr _borderlessWindow = IntPtr.Zero;
         static int _savedStyle, _savedExStyle;
@@ -169,7 +209,7 @@ namespace DolphinAchiever
                              SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
                 // Keep Dolphin focused on the way out too, otherwise the next Alt+Enter
                 // does nothing until the window is clicked.
-                SetForegroundWindow(h);
+                ForceForeground(h);
                 return false;
             }
 
@@ -195,7 +235,7 @@ namespace DolphinAchiever
                          mi.rcMonitor.Right - mi.rcMonitor.Left,
                          (mi.rcMonitor.Bottom - mi.rcMonitor.Top) - 1,
                          SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            SetForegroundWindow(win);
+            ForceForeground(win);
             _borderlessWindow = win;
             return true;
         }

@@ -7,6 +7,7 @@ class WinInfo{
  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h,int i);
+ [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
  delegate bool EnumProc(IntPtr h, IntPtr p);
@@ -57,6 +58,13 @@ class WinInfo{
  static void Main(string[] a){
   string proc=a[0];
   if(proc=="zorder"){ ZOrder(); return; }
+  if(proc=="foreground"){
+    IntPtr fg=GetForegroundWindow();
+    uint pid; GetWindowThreadProcessId(fg,out pid);
+    string nm="?"; try{ nm=Process.GetProcessById((int)pid).ProcessName; }catch{}
+    RECT fr; GetWindowRect(fg,out fr);
+    Console.WriteLine("FOREGROUND: "+nm+" hwnd="+fg+" rect=("+fr.L+","+fr.T+") "+(fr.R-fr.L)+"x"+(fr.B-fr.T));
+    return; }
   Dump(proc,"before");
   if(a.Length>1 && a[1]=="altenter"){
    var ws=Windows(proc);
