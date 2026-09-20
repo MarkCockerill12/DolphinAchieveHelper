@@ -238,8 +238,12 @@ namespace DolphinAchiever
             if (live.Count == 0)
             {
                 if (Visible) Hide();
+                // Idle: tick slowly. Nothing is animating, and this runs for the whole
+                // time the emulator is open.
+                if (_timer.Interval != 250) _timer.Interval = 250;
                 return;
             }
+            if (_timer.Interval != 40) _timer.Interval = 40;
 
             POINT cur;
             if (!GetCursorPos(out cur)) { cur.x = -1; cur.y = -1; }
