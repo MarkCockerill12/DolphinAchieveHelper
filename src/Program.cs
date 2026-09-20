@@ -360,6 +360,29 @@ namespace DolphinAchiever
 
                             int located = 0;
                             foreach (Achievement a in game.Achievements) if (a.HasLocation) located++;
+
+                            // Confirm on screen that the overlay is alive and watching,
+                            // so silence in a completed area is not mistaken for a fault.
+                            int remaining = 0;
+                            foreach (Achievement a in game.Achievements)
+                                if (!unlocked.Contains(a.Id)) remaining++;
+                            var hello = new Notice
+                            {
+                                Header = game.Title,
+                                HeaderNote = remaining + " left",
+                                Seconds = _opt.Seconds
+                            };
+                            hello.Rows.Add(new NoticeRow
+                            {
+                                Title = matcher.Keys.Count > 0
+                                    ? "Watching for achievements in each area"
+                                    : "No location data for this game",
+                                Body = matcher.Keys.Count > 0
+                                    ? located + " of " + game.Achievements.Count +
+                                      " achievements are tied to a place."
+                                    : "This set does not identify where you are, so no area popups will appear."
+                            });
+                            _toast.Push(hello);
                             Log(string.Format("{0}: {1} achievements, {2} location-aware, {3} already unlocked, {4} location keys",
                                 game.Title, game.Achievements.Count, located, unlocked.Count, matcher.Keys.Count));
                             if (matcher.Keys.Count == 0)

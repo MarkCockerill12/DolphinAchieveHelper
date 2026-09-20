@@ -279,6 +279,33 @@ namespace DolphinAchiever
             }
 
             PruneWeakLocations();
+            DropIfNotDiscriminating();
+        }
+
+        // A level identifier has to tell many levels apart. If the best primary key only
+        // ever takes a handful of values it is a state flag, not a location, and every
+        // achievement constraining it would match a large slice of the game.
+        //
+        // Sonic and the Secret Rings is the motivating case: its best key has two values
+        // shared by 22 achievements, which produced 105 wrong matches at 12% precision.
+        // Every game that genuinely works has 16-36 distinct values on its best key.
+        const int MinLevelValues = 4;
+
+        void DropIfNotDiscriminating()
+        {
+            int best = 0;
+            for (int i = 0; i < Keys.Count; i++)
+                if (IsPrimary(i) && Keys[i].Values.Count > best) best = Keys[i].Values.Count;
+
+            if (best >= MinLevelValues) return;
+
+            Keys.Clear();
+            WinningChain = "";
+            foreach (Achievement a in _achs)
+            {
+                a.Fingerprint.Clear();
+                a.AltFingerprints.Clear();
+            }
         }
 
         // Drop location constraints too vague to identify a level.

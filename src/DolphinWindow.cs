@@ -190,7 +190,7 @@ namespace DolphinAchiever
             SetWindowPos(win, IntPtr.Zero,
                          mi.rcMonitor.Left, mi.rcMonitor.Top,
                          mi.rcMonitor.Right - mi.rcMonitor.Left,
-                         mi.rcMonitor.Bottom - mi.rcMonitor.Top,
+                         (mi.rcMonitor.Bottom - mi.rcMonitor.Top) - 1,
                          SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             SetForegroundWindow(win);
             _borderlessWindow = win;

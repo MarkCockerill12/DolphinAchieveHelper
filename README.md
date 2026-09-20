@@ -68,7 +68,6 @@ Options:
 | `-Corner 0..3` | 0 = top-left, 1 = top-right, 2 = bottom-left, **3 = bottom-right** |
 | `-Seconds 7` | How long the panel stays up (hovering holds it open) |
 | `-Text hover` | `hover` (default), `always` to always show descriptions, `never` |
-| `-NoFullscreenFix` | Don't touch Dolphin's borderless-fullscreen setting |
 | `-NoShortcut` | Don't create shortcuts |
 
 Uninstall with `.\Uninstall.ps1` — it restores Dolphin's logging settings and removes
@@ -155,7 +154,15 @@ loses the level test entirely.
 
 ### 4b. Not showing the wrong level
 
-Two rules keep false positives out, both learned the hard way:
+Three rules keep false positives out, all learned the hard way:
+
+**A two-value flag is not a level.** If the best candidate key only ever takes a handful
+of values it is game state, not a location, and every achievement using it would match a
+large slice of the game. *Sonic and the Secret Rings* is the motivating case: its best
+key has two values shared by 22 achievements, which produced 105 wrong matches at 12%
+precision. Games that genuinely work have 16-36 distinct values on their best key, so a
+set whose best key has fewer than four is treated as having no detectable location and
+stays silent.
 
 **A partial name match is not an identity.** Where the level is named by text, an
 achievement may compare only one 4-byte window of it. A window like the `Gala` of

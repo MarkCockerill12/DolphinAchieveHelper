@@ -37,8 +37,26 @@ class WinInfo{
   }
  }
 
+ static void ZOrder(){
+  Console.WriteLine("--- z-order (top first) ---");
+  int i=0;
+  EnumWindows(delegate(IntPtr h, IntPtr l){
+    if(!IsWindowVisible(h)) return true;
+    RECT r; GetWindowRect(h,out r);
+    if((r.R-r.L)<300||(r.B-r.T)<100) return true;
+    uint pid; GetWindowThreadProcessId(h,out pid);
+    string nm="?";
+    try{ nm=Process.GetProcessById((int)pid).ProcessName; }catch{}
+    int ex=GetWindowLong(h,GWL_EXSTYLE);
+    if(nm.IndexOf("Dolphin",StringComparison.OrdinalIgnoreCase)<0) return true;
+    Console.WriteLine(string.Format("  [{0}] {1,-18} hwnd={2} rect=({3},{4}) {5}x{6} topmost={7}",
+      i++, nm, h, r.L, r.T, r.R-r.L, r.B-r.T, (ex & 0x8)!=0));
+    return true;},IntPtr.Zero);
+ }
+
  static void Main(string[] a){
   string proc=a[0];
+  if(proc=="zorder"){ ZOrder(); return; }
   Dump(proc,"before");
   if(a.Length>1 && a[1]=="altenter"){
    var ws=Windows(proc);

@@ -73,7 +73,10 @@ static class Audit
 
         var lm = new LocationMatcher(achs);
         lm.Build();
-        Console.WriteLine("achievements: " + achs.Count + "  location keys: " + lm.Keys.Count);
+        int locatedCount = 0;
+        foreach (Achievement a0 in achs) if (a0.HasLocation) locatedCount++;
+        Console.WriteLine("achievements: " + achs.Count + "  location keys: " + lm.Keys.Count
+                          + "  located: " + locatedCount + "/" + achs.Count);
         if (lm.Keys.Count == 0) return;
 
         var primary = new List<int>();
