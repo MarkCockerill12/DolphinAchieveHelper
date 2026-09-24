@@ -17,7 +17,7 @@
     The Dolphin folder (the one containing Dolphin.exe).
 
 .PARAMETER WorkDir
-    Where Dolphin's source is fetched and built. Needs about 10 GB; kept between runs so
+    Where Dolphin's source is fetched and built. Needs about 4 GB; kept between runs so
     later runs are much faster.
 
 .PARAMETER Ref
@@ -40,6 +40,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$clock = [Diagnostics.Stopwatch]::StartNew()
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'PatcherCore.ps1')
 
@@ -73,6 +74,25 @@ if (-not $version) { throw "Could not tell which Dolphin version is in $Install.
 Ok "Dolphin $($version.Name)$(if ($version.Patched) { ' (already patched; it will be rebuilt)' })"
 if (Test-DolphinRunning $Install) { throw 'Dolphin is running. Close it and try again.' }
 
+# Find out now, not after an hour of building, whether the install can be written to
+# (e.g. Dolphin under C:\Program Files needs administrator rights).
+$probe = Join-Path $Install ('.dolphinachiever-write-test-' + [Guid]::NewGuid().ToString('N'))
+try { [IO.File]::WriteAllText($probe, 'x'); [IO.File]::Delete($probe) }
+catch {
+    throw "Can't write to $Install. Run the patcher as administrator (right-click 'Patch Dolphin.cmd' > Run as administrator), or move Dolphin to a folder you own."
+}
+
+# The first run downloads Dolphin's source and all its libraries (about 1 GB) and builds them:
+# about 4 GB in all. Leave some headroom.
+$firstRun = -not (Test-Path (Join-Path $WorkDir 'dolphin\.git'))
+$needGB = if ($firstRun) { 6 } else { 2 }
+$root = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($WorkDir))
+$freeGB = [Math]::Floor((New-Object IO.DriveInfo $root).AvailableFreeSpace / 1GB)
+if ($freeGB -lt $needGB) {
+    throw "Only $freeGB GB free on $root; building Dolphin needs about $needGB GB. Free some space, or pass -WorkDir on another drive."
+}
+Ok "$freeGB GB free on $root"
+
 # --- tools ------------------------------------------------------------------
 Step 'Checking tools'
 Update-SessionPath
@@ -86,11 +106,15 @@ if (-not (Find-MSBuild)) {
 # --- source -----------------------------------------------------------------
 Step "Getting Dolphin's source"
 $src = Join-Path $WorkDir 'dolphin'
+# Some bundled libraries (SPIRV-Cross's test files) have paths past Windows' 260-character
+# limit once under a work folder; without this, checking them out fails.
+$gitArgs = @('-c', 'core.longpaths=true', '-C', $src)
 if (-not (Test-Path (Join-Path $src '.git'))) {
     New-Item -ItemType Directory -Force -Path $src | Out-Null
-    Invoke-Native 'git init' { & $git -C $src init -q }
-    Invoke-Native 'git remote' { & $git -C $src remote add origin $DolphinRepo }
-    Say 'First run: this downloads a few GB.'
+    Invoke-Native 'git init' { & $git @gitArgs init -q }
+    Invoke-Native 'git remote' { & $git @gitArgs remote add origin $DolphinRepo }
+    Invoke-Native 'git config' { & $git @gitArgs config core.longpaths true }
+    Say 'First run: this downloads about 1 GB.'
 }
 
 # Candidates, most specific first: an explicit -Ref, the release tag, then commit ids read
@@ -105,26 +129,26 @@ $fetched = $null
 foreach ($c in $candidates) {
     Say "Fetching $c ..."
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & $git -C $src fetch --depth 1 --no-tags origin $c 2>&1 | ForEach-Object { Write-Host "    $_" }
+    & $git @gitArgs fetch --depth 1 --no-tags origin $c 2>&1 | ForEach-Object { Write-Host "    $_" }
     $ErrorActionPreference = $old
     if ($LASTEXITCODE -eq 0) { $fetched = $c; break }
 }
 if (-not $fetched) { throw "Could not download Dolphin $($version.Name)'s source. Check your internet connection." }
 
 # Throw away the previous run's patches and put the tree exactly at this version.
-Invoke-Native 'git checkout' { & $git -C $src checkout -q --force FETCH_HEAD }
-Invoke-Native 'git clean' { & $git -C $src clean -q -fd }
-Invoke-Native 'git submodule reset' { & $git -C $src submodule foreach -q --recursive 'git reset -q --hard && git clean -q -fd' }
+Invoke-Native 'git checkout' { & $git @gitArgs checkout -q --force FETCH_HEAD }
+Invoke-Native 'git clean' { & $git @gitArgs clean -q -fd }
+Invoke-Native 'git submodule reset' { & $git @gitArgs submodule foreach -q --recursive 'git reset -q --hard && git clean -q -fd' }
 Say 'Updating bundled libraries...'
-Invoke-Native 'git submodule update' { & $git -C $src submodule update -q --init --recursive --depth 1 --jobs 8 }
-Ok "Source ready at $((& $git -C $src rev-parse --short HEAD).Trim())"
+Invoke-Native 'git submodule update' { & $git @gitArgs submodule update -q --init --recursive --depth 1 --jobs 8 }
+Ok "Source ready at $((& $git @gitArgs rev-parse --short HEAD).Trim())"
 
 # --- patches ----------------------------------------------------------------
 Step 'Applying patches'
 foreach ($p in $patches) {
     $name = Split-Path -Leaf $p
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & $git -C $src apply --3way $p 2>&1 | ForEach-Object { Write-Host "    $_" }
+    & $git @gitArgs apply --3way $p 2>&1 | ForEach-Object { Write-Host "    $_" }
     $ErrorActionPreference = $old
     if ($LASTEXITCODE -ne 0) {
         throw "$name does not fit Dolphin $($version.Name): Dolphin changed the code it modifies. Nothing in your install was touched. The patches need updating for this version."
@@ -133,7 +157,7 @@ foreach ($p in $patches) {
 }
 
 # --- build ------------------------------------------------------------------
-Step 'Building (30-60 minutes the first time, a few minutes after that)'
+Step 'Building (about 10 minutes on a fast laptop, 20-40 on a slower one; ~1 minute if nothing changed)'
 $toolset = 'v143'
 $propsFile = Join-Path $src 'Source\VSProps\Configuration.Base.props'
 if (Test-Path $propsFile) {
@@ -212,5 +236,6 @@ foreach ($ini in Get-DolphinIniPaths $Install) {
 }
 
 Write-Host ''
+Write-Host ('Finished in {0:0} min.' -f $clock.Elapsed.TotalMinutes)
 Write-Host 'DONE: Dolphin is patched. Start it as usual.'
 exit 0

@@ -63,7 +63,8 @@ $title.Font = New-Object Drawing.Font('Segoe UI', 12, [Drawing.FontStyle]::Bold)
 
 [void](Add-Row (New-Label ("When you enter a level, Dolphin will list the achievements you can still earn " +
     "there, and label its challenge indicators. This builds Dolphin from source at the same version " +
-    "you already have, so the first run downloads a few GB and takes 30-60 minutes. Later runs take minutes.")))
+    "you already have: about 1 GB to download, then a build that takes around 10 minutes on a fast " +
+    "laptop and 20-40 on a slower one. Running it again on the same version takes about a minute.")))
 
 $folderLabel = New-Label 'Dolphin folder:'
 $folderLabel.Anchor = 'Left'
@@ -108,7 +109,7 @@ $autoUpdateNote.Margin = New-Object Windows.Forms.Padding((Px 22), (Px 0), (Px 3
 function Update-AutoUpdateNote {
     $autoUpdateNote.Text = $(if ($autoUpdate.Checked) {
         "Dolphin keeps updating itself as normal. Each update brings back the standard Dolphin.exe, " +
-        "so the achievement list stops showing until you run this patcher again (a few minutes)."
+        "so the achievement list stops showing until you run this patcher again (about as long as the first run)."
     } else {
         "Dolphin stays on this version. To update later, install the new Dolphin, then run this patcher again."
     })
@@ -279,7 +280,7 @@ $installTools.Add_Click({
             '--accept-package-agreements --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"')
     }
     $answer = [Windows.Forms.MessageBox]::Show($form, ("This installs the missing tools with winget (Windows asks for " +
-        "permission; Visual Studio Build Tools is a few GB and takes a while). Continue?"), 'Install tools', 'YesNo', 'Question')
+        "permission; Visual Studio Build Tools is several GB and typically takes 15-30 minutes). Continue?"), 'Install tools', 'YesNo', 'Question')
     if ($answer -ne 'Yes') { return }
     $script = ($cmds -join ' & ') + ' & echo. & echo Finished. Close this window and go back to the patcher. & pause'
     Start-Process cmd.exe -ArgumentList '/c', $script

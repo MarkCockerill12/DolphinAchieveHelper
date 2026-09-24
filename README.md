@@ -17,7 +17,8 @@ exclusive fullscreen alike. Nothing extra runs alongside Dolphin.
 
 ## How to use
 
-You need Windows 10 or 11 (64-bit), an internet connection and about 10 GB of free disk space.
+You need Windows 10 or 11 (64-bit), an internet connection and about 5 GB of free disk space
+(plus about 7 GB more if the build tools below still have to be installed).
 
 1. **Download** this repository (green *Code* button, *Download ZIP*) and unzip it anywhere.
 2. **Double-click `Patch Dolphin.cmd`.** The patcher window opens.
@@ -28,7 +29,8 @@ You need Windows 10 or 11 (64-bit), an internet connection and about 10 GB of fr
    which Dolphin version it found.
 4. If it says tools are missing, press **Install missing tools**. It installs
    [Git](https://git-scm.com) and Microsoft's *Visual Studio Build Tools* (C++), which are
-   needed to build Dolphin. Windows asks for permission, and the Build Tools are a few GB.
+   needed to build Dolphin. Windows asks for permission; the Build Tools are a large download
+   and install (typically 15-30 minutes), but only once.
 5. **Choose whether Dolphin keeps updating itself** with *Keep Dolphin's auto-update on*
    (on by default). If it stays on, Dolphin updates as normal, but each update brings back
    the standard `Dolphin.exe`, so the achievement list stops showing until you run the
@@ -36,8 +38,10 @@ You need Windows 10 or 11 (64-bit), an internet connection and about 10 GB of fr
 6. **Back up your Dolphin folder**: copy the whole folder somewhere safe. The patcher never
    touches your saves or settings and keeps its own copy of every file it replaces, but a
    backup is the simple way back if anything goes wrong.
-7. **Press Run.** The first run downloads Dolphin's source (a few GB) and builds it, which
-   takes 30-60 minutes. The log shows what it is doing. Later runs take a few minutes.
+7. **Press Run.** It downloads Dolphin's source (about 1 GB) and builds it; the log shows
+   what it is doing. See [how long it takes](#how-long-it-takes). If Dolphin lives in a
+   protected folder such as `C:\Program Files`, right-click `Patch Dolphin.cmd` and choose
+   *Run as administrator*; the patcher checks this before it starts building.
 8. **Start Dolphin as usual.** Log in to RetroAchievements in Dolphin
    (*Tools > Achievements*) if you have not already.
 
@@ -52,7 +56,7 @@ you have installed, so it keeps working across Dolphin releases and development 
 
 - **Auto-update on** (the default): Dolphin updates itself when a new version is out, which
   replaces the patched `Dolphin.exe` with the standard one. Everything still works; only the
-  achievement list and labels are gone until you run the patcher again (a few minutes).
+  achievement list and labels are gone until you run the patcher again.
 - **Auto-update off**: Dolphin stays on the version you patched. To update, install the new
   Dolphin over the old one, then run the patcher again.
 
@@ -63,6 +67,22 @@ if you run development builds).
 
 If a future Dolphin changes the code the patches modify, the patcher stops **before touching
 your install** and says the patches need updating for that version.
+
+### How long it takes
+
+Measured on a laptop with an 8-core Ryzen 7 7730U and a fast connection:
+
+| Run | Time |
+|---|---|
+| First run on a computer | 10 minutes (3 downloading, 7 building) |
+| After a Dolphin update | close to the first run: most of Dolphin changes between versions, so most of it is rebuilt, but only the changes are downloaded |
+| Again on the same version | about 1 minute |
+
+Building is the slow part, and it scales with your processor: on a 4-core laptop expect
+roughly 20-40 minutes for a first run, and longer on battery power. A slow connection adds
+to the download. The build folder takes about 4 GB and is kept between runs
+(`%USERPROFILE%\dolphin-patched-build`); deleting it is safe, the next run just starts from
+scratch.
 
 ### Undoing it
 

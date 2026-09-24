@@ -11,7 +11,8 @@ function Get-DolphinVersion([string]$InstallDir) {
     if (-not (Test-Path -LiteralPath $exe)) { return $null }
 
     $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($exe))
-    $m = [regex]::Match($text, 'Dolphin (\d{4}[a-z]?(?:-\d+)?)(-dirty)?\x00')
+    # Since mid-2024 versions are named by date ("2407", "2606a"); older ones "5.0-21460".
+    $m = [regex]::Match($text, 'Dolphin ((?:\d{4}[a-z]?|\d+\.\d+)(?:-\d+)?)(-dirty)?\x00')
     if (-not $m.Success) { return $null }
 
     # 40-hex strings that look like a commit id (lookup tables in the binary are digit runs or
@@ -28,7 +29,7 @@ function Get-DolphinVersion([string]$InstallDir) {
     [pscustomobject]@{
         Name      = $name
         # A release ("2606a") is a git tag; a dev build ("2606-123") is only a commit.
-        IsRelease = $name -match '^\d{4}[a-z]?$'
+        IsRelease = $name -match '^(\d{4}[a-z]?|\d+\.\d+)$'
         Patched   = $m.Groups[2].Success
         Commits   = $commits
     }
