@@ -27,7 +27,7 @@ $form.Text = 'Dolphin Achiever - Patch Dolphin'
 $form.AutoScaleMode = 'None'
 $form.Font = New-Object Drawing.Font('Segoe UI', 9)
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize = New-Object Drawing.Size((Px 760), (Px 640))
+$form.ClientSize = New-Object Drawing.Size((Px 760), (Px 700))
 $form.MinimumSize = New-Object Drawing.Size((Px 640), (Px 520))
 
 $table = New-Object Windows.Forms.TableLayoutPanel
@@ -92,6 +92,28 @@ $table.RowCount = $r + 1
 $table.Controls.Add($toolsLabel, 0, $r)
 $table.SetColumnSpan($toolsLabel, 2)
 $table.Controls.Add($installTools, 2, $r)
+
+$autoUpdate = New-Object Windows.Forms.CheckBox
+$autoUpdate.Text = "Keep Dolphin's auto-update on"
+$autoUpdate.AutoSize = $true
+$autoUpdate.Checked = $true
+$autoUpdate.Margin = New-Object Windows.Forms.Padding((Px 3), (Px 8), (Px 3), (Px 0))
+[void](Add-Row $autoUpdate)
+
+$autoUpdateNote = New-Label ''
+$autoUpdateNote.ForeColor = [Drawing.Color]::DimGray
+$autoUpdateNote.Margin = New-Object Windows.Forms.Padding((Px 22), (Px 0), (Px 3), (Px 6))
+[void](Add-Row $autoUpdateNote)
+
+function Update-AutoUpdateNote {
+    $autoUpdateNote.Text = $(if ($autoUpdate.Checked) {
+        "Dolphin keeps updating itself as normal. Each update brings back the standard Dolphin.exe, " +
+        "so the achievement list stops showing until you run this patcher again (a few minutes)."
+    } else {
+        "Dolphin stays on this version. To update later, install the new Dolphin, then run this patcher again."
+    })
+}
+Update-AutoUpdateNote
 
 $backupNote = New-Label ("Before you run it: make a backup of your Dolphin folder (copy the whole folder " +
     "somewhere safe). The patcher never touches your saves or settings and keeps a copy of every file " +
@@ -195,6 +217,7 @@ function Set-Running([bool]$running) {
     $run.Enabled = -not $running
     $cancel.Enabled = $running
     $browse.Enabled = -not $running
+    $autoUpdate.Enabled = -not $running
     $folderBox.Enabled = -not $running
     $progress.MarqueeAnimationSpeed = $(if ($running) { 30 } else { 0 })
 }
@@ -213,7 +236,11 @@ $timer.Add_Tick({
         Set-Running $false
         if ($code -eq 0) {
             $status.Text = 'Done'
-            [void][Windows.Forms.MessageBox]::Show($form, 'Dolphin is patched. Start it as usual.', 'Done', 'OK', 'Information')
+            $msg = 'Dolphin is patched. Start it as usual.'
+            if ($autoUpdate.Checked) {
+                $msg += "`n`nAuto-update is on. When Dolphin updates itself, run this patcher again to bring the achievement list back."
+            }
+            [void][Windows.Forms.MessageBox]::Show($form, $msg, 'Done', 'OK', 'Information')
         } else {
             $status.Text = 'Failed'
             $err = [regex]::Matches($log.Text, '(?m)^ERROR: (.+)$')
@@ -232,6 +259,7 @@ $browse.Add_Click({
     if ($dlg.ShowDialog($form) -eq 'OK') { $folderBox.Text = $dlg.SelectedPath; Update-State }
 })
 $folderBox.Add_Leave({ Update-State })
+$autoUpdate.Add_CheckedChanged({ Update-AutoUpdateNote })
 $folderBox.Add_KeyDown({ if ($_.KeyCode -eq 'Enter') { Update-State } })
 $form.Add_Activated({ Update-State })
 
@@ -276,8 +304,8 @@ $run.Add_Click({
     Update-SessionPath
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = 'cmd.exe'
-    $psi.Arguments = ('/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Install "{1}" > "{2}" 2>&1' -f
-        $engine, $dir.TrimEnd('\'), $state.Log)
+    $psi.Arguments = ('/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Install "{1}" -AutoUpdate {2} > "{3}" 2>&1' -f
+        $engine, $dir.TrimEnd('\'), $(if ($autoUpdate.Checked) { 'On' } else { 'Off' }), $state.Log)
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $state.Process = [Diagnostics.Process]::Start($psi)

@@ -89,6 +89,39 @@ function Get-DolphinUserDirs([string]$InstallDir) {
     return $dirs | Where-Object { Test-Path (Join-Path $_ 'Config\Dolphin.ini') }
 }
 
+# The Dolphin.ini files this install uses, creating the one Dolphin will read if none exists yet
+# (a fresh install that has never been started).
+function Get-DolphinIniPaths([string]$InstallDir) {
+    $dirs = @(Get-DolphinUserDirs $InstallDir)
+    if ($dirs.Count -eq 0) {
+        $dirs = @($(if (Test-Path (Join-Path $InstallDir 'portable.txt')) { Join-Path $InstallDir 'User' }
+                    else { Join-Path $env:APPDATA 'Dolphin Emulator' }))
+    }
+    return $dirs | ForEach-Object { Join-Path $_ 'Config\Dolphin.ini' }
+}
+
+function Get-IniValue([string]$Text, [string]$Section, [string]$Key) {
+    $m = [regex]::Match($Text, "(?ms)^\[$([regex]::Escape($Section))\][^\[]*?^$([regex]::Escape($Key)) = ([^\r\n]*)")
+    if ($m.Success) { return $m.Groups[1].Value.Trim() }
+    return $null
+}
+
+function Set-IniValue([string]$Path, [string]$Section, [string]$Key, [string]$Value) {
+    $text = if (Test-Path -LiteralPath $Path) { [IO.File]::ReadAllText($Path) } else { '' }
+    $sec = [regex]::Escape($Section)
+    $k = [regex]::Escape($Key)
+    if ([regex]::IsMatch($text, "(?ms)^\[$sec\][^\[]*?^$k = ")) {
+        $text = [regex]::Replace($text, "(?ms)(^\[$sec\][^\[]*?^$k = )[^\r\n]*", { param($m) $m.Groups[1].Value + $Value })
+    } elseif ([regex]::IsMatch($text, "(?m)^\[$sec\](?=\r?$)")) {
+        $text = [regex]::Replace($text, "(?m)^\[$sec\](?=\r?$)", { param($m) $m.Value + "`r`n$Key = $Value" })
+    } else {
+        if ($text -and -not $text.EndsWith("`n")) { $text += "`r`n" }
+        $text += "[$Section]`r`n$Key = $Value`r`n"
+    }
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path))
+    [IO.File]::WriteAllText($Path, $text)
+}
+
 function Test-DolphinRunning([string]$InstallDir) {
     $exe = (Join-Path $InstallDir 'Dolphin.exe')
     foreach ($p in Get-Process -Name Dolphin -ErrorAction SilentlyContinue) {

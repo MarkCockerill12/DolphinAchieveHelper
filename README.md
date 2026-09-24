@@ -5,7 +5,7 @@ lists the [RetroAchievements](https://retroachievements.org) you can still earn 
 there**: badge, title, points and how to unlock it. That includes the ones that would
 otherwise only appear once you have already earned them.
 
-![Achievement list on entering Bonefin Galaxy](docs/banner-galaxy.png)
+![Achievement list on entering Bonefin Galaxy](https://cdn.jsdelivr.net/gh/MarkCockerill12/DolphinAchieveHelper@main/docs/banner-galaxy.png)
 
 It also puts the name and unlock condition next to Dolphin's challenge indicators, the
 bare badges Dolphin shows while a timed or no-damage challenge is running.
@@ -22,19 +22,23 @@ You need Windows 10 or 11 (64-bit), an internet connection and about 10 GB of fr
 1. **Download** this repository (green *Code* button, *Download ZIP*) and unzip it anywhere.
 2. **Double-click `Patch Dolphin.cmd`.** The patcher window opens.
 
-   ![The patcher window](docs/patcher.png)
+   ![The patcher window](https://cdn.jsdelivr.net/gh/MarkCockerill12/DolphinAchieveHelper@main/docs/patcher.png)
 
 3. **Pick your Dolphin folder**, the one that contains `Dolphin.exe`. The window shows
    which Dolphin version it found.
 4. If it says tools are missing, press **Install missing tools**. It installs
    [Git](https://git-scm.com) and Microsoft's *Visual Studio Build Tools* (C++), which are
    needed to build Dolphin. Windows asks for permission, and the Build Tools are a few GB.
-5. **Back up your Dolphin folder**: copy the whole folder somewhere safe. The patcher never
+5. **Choose whether Dolphin keeps updating itself** with *Keep Dolphin's auto-update on*
+   (on by default). If it stays on, Dolphin updates as normal, but each update brings back
+   the standard `Dolphin.exe`, so the achievement list stops showing until you run the
+   patcher again. Turn it off to stay on your current version.
+6. **Back up your Dolphin folder**: copy the whole folder somewhere safe. The patcher never
    touches your saves or settings and keeps its own copy of every file it replaces, but a
    backup is the simple way back if anything goes wrong.
-6. **Press Run.** The first run downloads Dolphin's source (a few GB) and builds it, which
+7. **Press Run.** The first run downloads Dolphin's source (a few GB) and builds it, which
    takes 30-60 minutes. The log shows what it is doing. Later runs take a few minutes.
-7. **Start Dolphin as usual.** Log in to RetroAchievements in Dolphin
+8. **Start Dolphin as usual.** Log in to RetroAchievements in Dolphin
    (*Tools > Achievements*) if you have not already.
 
 Make sure *Config > Interface > Show On-Screen Display Messages* is on, because the list is
@@ -43,10 +47,19 @@ an on-screen message. For the labelled challenge indicators, also keep
 
 ### Updating Dolphin
 
-Update Dolphin however you normally do, then run the patcher again. It always builds the
-exact version you have installed, so it keeps working across Dolphin releases and
-development builds. A patched Dolphin never updates itself; the patcher also switches the
-auto-updater off if your settings name an update track.
+Whenever Dolphin has been updated, run the patcher again. It always builds the exact version
+you have installed, so it keeps working across Dolphin releases and development builds.
+
+- **Auto-update on** (the default): Dolphin updates itself when a new version is out, which
+  replaces the patched `Dolphin.exe` with the standard one. Everything still works; only the
+  achievement list and labels are gone until you run the patcher again (a few minutes).
+- **Auto-update off**: Dolphin stays on the version you patched. To update, install the new
+  Dolphin over the old one, then run the patcher again.
+
+Your choice is written to Dolphin's own setting (*Config > General > Auto Update*), so you
+can also change it there later. It is needed because a self-built Dolphin defaults to
+"Don't Update": with the box ticked the patcher keeps your update channel (Releases, or Dev
+if you run development builds).
 
 If a future Dolphin changes the code the patches modify, the patcher stops **before touching
 your install** and says the patches need updating for that version.
@@ -62,7 +75,8 @@ Copy those files back over your Dolphin folder, restore your backup, or reinstal
 .\patcher\Build-PatchedDolphin.ps1 -Install "C:\Path\To\Dolphin"
 ```
 
-`-WorkDir` sets where the source is built (default `%USERPROFILE%\dolphin-patched-build`,
+`-AutoUpdate Off` stops Dolphin updating itself (default `On`). `-WorkDir` sets where the
+source is built (default `%USERPROFILE%\dolphin-patched-build`,
 kept between runs so later runs are fast). `-Ref <tag or commit>` builds a specific Dolphin
 version instead of the installed one.
 
@@ -82,7 +96,7 @@ corner, above the challenge indicators, for 6 to 15 seconds depending on how muc
 - It appears again when you reach somewhere with something new, and when you come back to a
   level after a menu or loading screen.
 
-![Achievements at Delfino Airstrip](docs/banner-sunshine.png)
+![Achievements at Delfino Airstrip](https://cdn.jsdelivr.net/gh/MarkCockerill12/DolphinAchieveHelper@main/docs/banner-sunshine.png)
 
 ---
 

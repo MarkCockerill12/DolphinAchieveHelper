@@ -23,6 +23,11 @@
 .PARAMETER Ref
     Build this Dolphin tag or commit instead of the one detected from the install.
 
+.PARAMETER AutoUpdate
+    On (default): Dolphin keeps updating itself. An update replaces the patched Dolphin.exe
+    with the official one, so run this again afterwards to get the achievement list back.
+    Off: Dolphin stays on this version until you update it yourself.
+
 .EXAMPLE
     .\Build-PatchedDolphin.ps1 -Install "C:\Dolphin-x64"
 #>
@@ -30,7 +35,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Install,
     [string]$WorkDir = "$env:USERPROFILE\dolphin-patched-build",
-    [string]$Ref
+    [string]$Ref,
+    [ValidateSet('On', 'Off')][string]$AutoUpdate = 'On'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -188,15 +194,20 @@ foreach ($c in $changes) {
 Ok "$($changes.Count) file(s) updated"
 if ([IO.Directory]::Exists($backup)) { Ok "Replaced files kept in $backup" }
 
-# A patched build never updates itself (self-built Dolphin has no update track), unless the
-# settings name one explicitly. That would swap the patched build for a stock one.
-foreach ($dir in Get-DolphinUserDirs $Install) {
-    $ini = Join-Path $dir 'Config\Dolphin.ini'
-    $text = [IO.File]::ReadAllText($ini)
-    $fixed = [regex]::Replace($text, '(?ms)(^\[AutoUpdate\][^\[]*?^UpdateTrack = )[^\r\n]+', '$1')
-    if ($fixed -ne $text) {
-        [IO.File]::WriteAllText($ini, $fixed)
-        Ok "Turned off Dolphin's auto-update in $ini"
+# Dolphin's update setting defaults to what the exe was built with: the official builds say
+# "update", a self-built one says "don't". So the choice has to be written down explicitly.
+foreach ($ini in Get-DolphinIniPaths $Install) {
+    $text = if (Test-Path -LiteralPath $ini) { [IO.File]::ReadAllText($ini) } else { '' }
+    $current = Get-IniValue $text 'AutoUpdate' 'UpdateTrack'
+    if ($AutoUpdate -eq 'On') {
+        # Keep a channel the user already picked; otherwise follow the kind of build installed.
+        $track = if ($current) { $current } elseif ($version.IsRelease) { 'beta' } else { 'dev' }
+        $label = if ($track -eq 'dev') { 'dev builds' } else { 'releases' }
+        Set-IniValue $ini 'AutoUpdate' 'UpdateTrack' $track
+        Ok "Auto-update stays on ($label). After Dolphin updates itself, run this again."
+    } else {
+        Set-IniValue $ini 'AutoUpdate' 'UpdateTrack' ''
+        Ok 'Auto-update turned off'
     }
 }
 
