@@ -1,277 +1,189 @@
 # Dolphin Achiever
 
-Pops up the RetroAchievements you can still earn **right where you are**, the moment you
-enter a level — with the badge art, the title and how to unlock it.
+Patches the [Dolphin](https://dolphin-emu.org) emulator so that, when you enter a level, it
+lists the [RetroAchievements](https://retroachievements.org) you can still earn **right
+there**: badge, title, points and how to unlock it. That includes the ones that would
+otherwise only appear once you have already earned them.
 
-![overlay example](docs/example.png)
+![Achievement list on entering Bonefin Galaxy](docs/banner-galaxy.png)
 
-Hovering a row reveals how to unlock it:
+It also puts the name and unlock condition next to Dolphin's challenge indicators, the
+bare badges Dolphin shows while a timed or no-damage challenge is running.
 
-![hover](docs/example-hover.png)
-
-Built for Dolphin + RetroAchievements. Game-agnostic: it learns each game's level layout
-from the achievement set itself, so it is not hardcoded for any particular title.
+It is drawn by Dolphin's own on-screen display, so it works in windowed mode, fullscreen and
+exclusive fullscreen alike. Nothing extra runs alongside Dolphin.
 
 ---
 
-## What it does
+## How to use
 
-When you enter Good Egg Galaxy in *Super Mario Galaxy*, a small panel appears in the
-corner listing what you can still earn there — one line each, badge, name and points.
-Rest the mouse on a row and it expands to show how to unlock it.
+You need Windows 10 or 11 (64-bit), an internet connection and about 10 GB of free disk space.
 
-When you then start a specific star/mission, anything tied to *that* section is shown
-too. Already-earned achievements are filtered out, and missables are highlighted and
-sorted first.
+1. **Download** this repository (green *Code* button, *Download ZIP*) and unzip it anywhere.
+2. **Double-click `Patch Dolphin.cmd`.** The patcher window opens.
 
-It is meant to sit alongside Dolphin's own achievement notifications, not compete with
-them: same corner, same scale, gone in a few seconds. The panel anchors to **Dolphin's
-picture**, not the desktop, and scales with it — so it stays put whether Dolphin is
-windowed or fullscreen.
+   ![The patcher window](docs/patcher.png)
 
-`DolphinAchiever.exe --demo` shows a sample panel so you can check placement without
-playing.
+3. **Pick your Dolphin folder**, the one that contains `Dolphin.exe`. The window shows
+   which Dolphin version it found.
+4. If it says tools are missing, press **Install missing tools**. It installs
+   [Git](https://git-scm.com) and Microsoft's *Visual Studio Build Tools* (C++), which are
+   needed to build Dolphin. Windows asks for permission, and the Build Tools are a few GB.
+5. **Back up your Dolphin folder**: copy the whole folder somewhere safe. The patcher never
+   touches your saves or settings and keeps its own copy of every file it replaces, but a
+   backup is the simple way back if anything goes wrong.
+6. **Press Run.** The first run downloads Dolphin's source (a few GB) and builds it, which
+   takes 30-60 minutes. The log shows what it is doing. Later runs take a few minutes.
+7. **Start Dolphin as usual.** Log in to RetroAchievements in Dolphin
+   (*Tools > Achievements*) if you have not already.
 
-The overlay is per-monitor DPI aware, so it renders at native resolution on scaled
-displays instead of being bitmap-stretched.
+Make sure *Config > Interface > Show On-Screen Display Messages* is on, because the list is
+an on-screen message. For the labelled challenge indicators, also keep
+*Tools > Achievements > Enable Challenge Indicators* on.
 
-## Design goals
+### Updating Dolphin
 
-- **Never modifies Dolphin.** Nothing is written into the Dolphin program folder, so
-  Dolphin updates can't break it and it can't break Dolphin. Re-run `Install.ps1` after
-  an update only if you moved Dolphin.
-- **No dependencies.** Compiles with the C# compiler that ships in every Windows 10/11
-  install. No .NET SDK, no runtime download, no Python, no DLLs. The built overlay is
-  about 60 KB.
-- **Idle until needed.** Starts with Dolphin, exits when Dolphin exits. While running it
-  reads a few bytes of emulator memory a few times a second.
-- **Read-only.** It never writes to Dolphin's memory and never touches your savegames.
+Update Dolphin however you normally do, then run the patcher again. It always builds the
+exact version you have installed, so it keeps working across Dolphin releases and
+development builds. A patched Dolphin never updates itself; the patcher also switches the
+auto-updater off if your settings name an update track.
 
-## Install
+If a future Dolphin changes the code the patches modify, the patcher stops **before touching
+your install** and says the patches need updating for that version.
+
+### Undoing it
+
+Every file the patcher replaces is kept in `<your Dolphin folder>\DolphinAchiever-backup\<date-time>\`.
+Copy those files back over your Dolphin folder, restore your backup, or reinstall Dolphin.
+
+### Without the window
 
 ```powershell
-git clone https://github.com/MarkCockerill12/DolphinAchieveHelper
-cd DolphinAchieveHelper
-powershell -ExecutionPolicy Bypass -File .\Install.ps1
+.\patcher\Build-PatchedDolphin.ps1 -Install "C:\Path\To\Dolphin"
 ```
 
-The installer finds Dolphin automatically (running process → common paths → registry →
-shallow drive scan). Override with `-DolphinPath "D:\Emu\Dolphin-x64\Dolphin.exe"`.
+`-WorkDir` sets where the source is built (default `%USERPROFILE%\dolphin-patched-build`,
+kept between runs so later runs are fast). `-Ref <tag or commit>` builds a specific Dolphin
+version instead of the installed one.
 
-Then launch with the **Dolphin (Achievements)** shortcut it creates.
+---
 
-Options:
+## What you see
 
-| Flag | Meaning |
-|---|---|
-| `-DolphinPath <path>` | Point at a specific `Dolphin.exe` |
-| `-Corner 0..3` | 0 = top-left, 1 = top-right, 2 = bottom-left, **3 = bottom-right** |
-| `-Seconds 7` | How long the panel stays up (hovering holds it open) |
-| `-Text hover` | `hover` (default), `always` to always show descriptions, `never` |
-| `-NoShortcut` | Don't create shortcuts |
+When you arrive somewhere with locked achievements, a panel appears in the bottom-right
+corner, above the challenge indicators, for 6 to 15 seconds depending on how much it lists.
 
-Uninstall with `.\Uninstall.ps1` — it restores Dolphin's logging settings and removes
-everything.
+- It lists only what can be earned **exactly where you are**: the current level *and*
+  mission. In *Super Mario Galaxy* that is the galaxy plus the star you picked; in
+  *Sunshine* the area plus the episode.
+- Missable achievements come first, then by points.
+- Anything already shown as a challenge indicator is left out, and anything you unlock while
+  the panel is up disappears from it.
+- It appears again when you reach somewhere with something new, and when you come back to a
+  level after a menu or loading screen.
 
-### Prerequisites
+![Achievements at Delfino Airstrip](docs/banner-sunshine.png)
 
-- Dolphin with RetroAchievements enabled and signed in (Tools → Achievements).
-- That's it. Your existing RA login is reused; no extra API key is needed.
+---
 
 ## How it works
 
-The interesting problem is that **RetroAchievements has no "which level is this
-achievement for?" field.** That information only exists implicitly, inside each
-achievement's trigger logic. Here is how it is recovered.
+### Building Dolphin at your version
 
-### 1. Getting the real trigger logic
+`Dolphin.exe` embeds its version name and the exact source commit it was built from. The
+patcher reads those, downloads Dolphin's source at that commit, applies two patches, builds
+it with Visual Studio's C++ tools and copies in only the files that differ. Your saves,
+settings and the rest of the install are untouched. Building from your own version, not
+shipping a prebuilt exe, is what keeps it working after Dolphin updates.
 
-The public Web API returns `MemAddr` as an **md5 hash** of the logic, which is useless
-here. The Connect API (`dorequest.php?r=patch`) — the one emulators themselves use —
-returns the actual trigger strings. Dolphin already stores a RetroAchievements username
-and API token, so that endpoint is reachable with no extra setup.
+| Patch | What it does |
+|---|---|
+| `patches/challenge-details.patch` | Draws the title and description next to each challenge indicator. |
+| `patches/level-banner.patch` | Adds `Core/LocationTracker`, which works out which achievements belong where you are, and draws the list. |
 
-### 2. Knowing which game is loaded
+### Working out where you are
 
-RetroAchievements identifies GameCube/Wii discs by hashing the executable inside the
-disc image. Reimplementing that would mean decompressing RVZ/WIA containers. Instead,
-Dolphin has *already done it* and logs the answer:
+Nothing is written for any particular game. The location is inferred from the achievement
+set itself, reusing the triggers Dolphin's achievement library (rcheevos) has already parsed
+and the memory values it refreshes every frame.
 
-```
-Identified game: 189 "Super Mario Galaxy" (4e0d0d2f2c5d3c13d758b027bbcc059f)
-```
+1. **Collect location clues.** Every achievement trigger is scanned for comparisons of a
+   memory value against a constant, one chain of conditions at a time:
+   - `stage = 12` must hold;
+   - `ResetIf stage != 12` means "only in stage 12";
+   - `AndNext stage != 3, ResetIf stage != 4` means "stage 3 or 4";
+   - `OrNext stage = 3, stage = 5` means "stage 3 or 5".
 
-The installer enables that one log channel and the overlay reads the ID back out. If the
-log is unavailable it falls back to matching the disc header's title against the
-RetroAchievements game list.
+   Chains with hit counting are skipped rather than guessed at. Reads of the previous frame's
+   value count too; when "previous" and "current" disagree ("reach B from A"), the starting
+   place is used.
+2. **Find the game's "where am I".** Games keep their location behind a pointer chain or at
+   a fixed address. The one that the most achievements compare against the widest spread of
+   constants wins. Every value there that takes two or more settings is a location key. One
+   with five or more is *strong*: it can name a place by itself (a stage id, a stage name held
+   as text, a mission number with many values).
+3. **Match.** An achievement belongs to where you are when every one of its location
+   constraints holds and at least one of them is on a strong key. That second rule stops "the
+   second mission" alone from placing an achievement in the second mission of every level.
+4. **Show.** Each frame, right after the achievements are processed, the keys are read and
+   the matching list is recomputed. Once the list has been stable for 45 frames (levels are
+   briefly inconsistent while loading) and contains something new, the panel appears. Zeroed
+   memory straight after boot is ignored.
 
-### 3. Reading emulator memory
+Each time the panel appears, Dolphin logs a line like
+`Location tracker: 3 achievements here [...]` on the RetroAchievements log channel, with the
+raw values it read. That line is the first thing to look at if a level shows nothing.
 
-Dolphin's own achievement code reads guest memory as *physical* addresses, matching the
-rcheevos console map (`0x00000000` = MEM1, `0x10000000` = MEM2 on Wii). The overlay
-attaches read-only with `ReadProcessMemory` and locates emulated RAM by scanning for a
-mapped region that begins with a valid GameCube/Wii disc header — magic `0xC2339F3D` at
-`0x1C` or `0x5D1C9EA3` at `0x18`, plus a printable 6-character game ID.
+---
 
-Dolphin maps guest RAM into more than one arena, and only in the fastmem arena does
-`MEM1 + 0x10000000` actually land on MEM2, so the correct arena is picked by requiring a
-64 MB `MEM_MAPPED` region at that offset.
+## Tested games
 
-### 4. Working out where "here" is
+Checked offline against each game's real achievement set. *Placeable* means the achievement
+can be tied to somewhere specific.
 
-This is the core trick. Achievements are parsed with a full rcheevos `MemAddr` parser,
-then the overlay looks for **the pointer chain that the most achievements compare
-against with the widest spread of constant values.** That chain is, by construction, the
-game's "where am I" variable.
+| Game | Placeable | What it uses as "where" |
+|---|---|---|
+| Super Mario Galaxy | 136 / 161 | galaxy name + star. 94 of the 97 achievements whose description names a galaxy land in that galaxy, none in a wrong one |
+| Super Mario Galaxy 2 | 63 / 101 | world + galaxy |
+| Super Mario Sunshine | 82 / 149 | area + episode (e.g. Ricco Harbor episode 8) |
+| Kirby's Epic Yarn | 35 / 62 | stage: each stage, boss fight and Kirby's Pad |
+| Kirby's Return to Dream Land | 37 / 96 | stage |
+| The Legend of Zelda: Twilight Princess (GameCube) | 127 / 150 | stage name (Ordon, Castle Town shops, dungeon rooms...) |
+| The Legend of Zelda: Twilight Princess (Wii) | 97 / 108 | stage |
+| Mario Kart: Double Dash!! | 58 / 66 | cup + engine class |
+| Mario Kart Wii | 96 / 203 | character + vehicle + track |
 
-For *Super Mario Galaxy* it finds:
+Also run in Dolphin: *Super Mario Galaxy* (Bonefin Galaxy shows its achievement),
+*Super Mario Sunshine* (Delfino Airstrip), and *Kirby's Epic Yarn*, *Twilight Princess* and
+*Mario Kart Wii* loading correctly and staying quiet on menus.
 
-```
-[0x6A1228] & 0x1FFFFFFF  ->  +0x24 & 0x1FFFFFFF
-    +0x20, +0x23, +0x27, +0x2B   <- the stage name, as ASCII ("EggStarGalaxy")
-    +0x40                        <- which star/mission
-```
+### Known limits
 
-Reads that occupy adjacent bytes are clustered together, so the multi-word stage-name
-string becomes one "level" key while the separate mission counter becomes a "section"
-key. That is what makes the two-tier popup possible — level first, then section.
+- **Save-file totals can't be placed**, e.g. "gold medal in every stage in Grass Land" or
+  "collect 50% of the Fabric". Their triggers only count save data and never read where you
+  are.
+- **Mario Kart Wii** ties most achievements to a character + kart + track combination, so
+  they show once you are racing that combination, not merely on that track.
+- In **Super Mario Sunshine** the title screen *is* Delfino Airstrip, so the Airstrip
+  achievements show there, and are not repeated when you then land at the Airstrip.
+- A few achievements are tied to a momentary game state (e.g. Twilight Princess's
+  "Obtain the Fused Shadow in ..."), so they show as it happens rather than beforehand.
+- Leaving and re-entering the same level without passing a menu or loading screen does not
+  show the list again.
 
-Games that use a simple flat `current_stage` byte fall out of the same algorithm with an
-empty pointer chain, so nothing is special-cased.
+---
 
-Achievements state their location in two different ways, and both are handled:
+## Repository layout
 
-```
-0xG20=1164404563              "is EggStarGalaxy"
-R:0xG20!=1164404563           "reset unless EggStarGalaxy"
-N:0xG40!=1_R:0xG40!=4         "star 1 or star 4"
-```
-
-Handling the `ResetIf` form matters a lot: on *Super Mario Galaxy* it takes location
-coverage from 50 to 123 of 161 achievements. Alt groups are handled too — plenty of sets
-put a bare `1=1` in the core group and all the real logic in alts, and ignoring those
-loses the level test entirely.
-
-### 4b. Not showing the wrong level
-
-Three rules keep false positives out, all learned the hard way:
-
-**A two-value flag is not a level.** If the best candidate key only ever takes a handful
-of values it is game state, not a location, and every achievement using it would match a
-large slice of the game. *Sonic and the Secret Rings* is the motivating case: its best
-key has two values shared by 22 achievements, which produced 105 wrong matches at 12%
-precision. Games that genuinely work have 16-36 distinct values on their best key, so a
-set whose best key has fewer than four is treated as having no detectable location and
-stays silent.
-
-**A partial name match is not an identity.** Where the level is named by text, an
-achievement may compare only one 4-byte window of it. A window like the `Gala` of
-`...Galaxy` is shared by dozens of level names, so such an achievement would pop
-everywhere. Constraints are therefore ignored unless they either hit a
-high-cardinality "anchor" key or cover a decent share of the identity bytes.
-
-**A section belongs to a level.** An achievement constrained only to "mission 1" matches
-mission 1 of *every* level, so the section pass also requires the level itself to match.
-Without that check the section popup could list more achievements than the whole level
-contained — which is exactly what it did before the check was added.
-
-### 5. Naming the place
-
-Trigger logic gives internal names like `EggStarGalaxy`. The friendly name comes from the
-set's **Rich Presence script**, which the same Connect API call returns and which the
-overlay parses and evaluates against live memory:
-
-```
-Mario is in Good Egg Galaxy "King Kaliente's Battle Fleet"
-```
-
-giving both the level and the section by their real names. If a game has no usable rich
-presence, the internal name is prettified instead (`EggStarGalaxy` → `Egg Star Galaxy`).
-
-### 6. Drawing it
-
-A click-through (`WS_EX_TRANSPARENT`), always-on-top layered window, drawn with
-`UpdateLayeredWindow` from a premultiplied-alpha DIB section. It can never take focus or
-swallow a controller/keyboard input.
-
-> Note: `Bitmap.GetHbitmap()` does **not** preserve alpha — `UpdateLayeredWindow`
-> succeeds but composites the window as fully transparent. The surface must be a real
-> `CreateDIBSection` bitmap in `Format32bppPArgb`.
-
-## Accuracy
-
-On *Super Mario Galaxy* (161 achievements), entering Good Egg Galaxy surfaces exactly the
-7 achievements that belong to it — the 6 whose text names the galaxy, plus *"Up, Up, and
-Away"* (the "Luigi on the Roof" star), which never mentions Good Egg by name and which
-text matching would miss. Trigger parsing succeeds on 161/161.
-
-Across seven GameCube and Wii sets (823 achievements) the trigger parser succeeds on all
-of them, and location coverage is 62-123 achievements for *Super Mario Galaxy*,
-*Super Mario Galaxy 2*, *Super Mario Sunshine*, *Mario Kart: Double Dash!!*,
-*Kirby's Epic Yarn* and *Sonic and the Secret Rings*.
-
-Coverage depends on the set. Achievements with no location condition ("collect 120
-stars") are global and are never popped. `tools/Audit.exe <cached patch json>` reports
-the discovered keys, per-level matches and an accuracy estimate for any set.
-
-## Limitations
-
-- **Windows only** — it uses `ReadProcessMemory` and Win32 layered windows.
-- **Exclusive fullscreen hides every overlay**, and Dolphin's fullscreen *is* exclusive:
-  the Vulkan backend calls `vkAcquireFullScreenExclusiveModeEXT`, and D3D calls
-  `IDXGISwapChain::SetFullscreenState`. Dolphin's own "Borderless Fullscreen" option
-  cannot help - `bBorderlessFullscreen` is written to the config but **never read by any
-  backend**. So the overlay takes over **Alt+Enter** itself (a system-wide hotkey, so
-  Dolphin never sees the key and never requests exclusive mode) and instead strips
-  Dolphin's window border and sizes it to the monitor. Same appearance, but it
-  composites, so the overlay is visible. Pass `--no-fs-hotkey` to disable.
-- A game whose achievement set never tests a shared location variable can't be mapped.
-  The overlay says so in its log and stays quiet rather than guessing.
-- If Dolphin runs elevated, run the overlay elevated too, or it cannot read its memory.
-
-## A note on hardcore mode
-
-This is a **read-only observer**. It does not write emulator memory, alter savestates or
-interact with the achievement runtime, and it shows only the achievement titles and
-descriptions that RetroAchievements already publishes and that Dolphin's own achievement
-list displays. It does not reveal trigger conditions or give any information you could
-not get by opening the game's page on retroachievements.org.
-
-## Layout
-
-```
-Install.ps1 / Uninstall.ps1   installer and clean removal
-src/
-  MemAddr.cs                  rcheevos trigger/value parser
-  RcEval.cs                   evaluator: pointer chains, typed reads, comparisons
-  LocationMatcher.cs          location-key discovery and achievement matching
-  RichPresence.cs             rich presence parser + evaluator
-  DolphinMemory.cs            process attach, arena discovery, guest memory reads
-  DolphinInstall.cs           finding Dolphin and its config
-  RaClient.cs                 RetroAchievements Connect API + caching
-  GameIdWatcher.cs            game ID from Dolphin's log
-  Toast.cs                    the overlay window
-  Program.cs                  orchestration
-tools/                        development probes and test harnesses
-```
-
-Runtime data (cache, badges, log) lives in `%LOCALAPPDATA%\DolphinAchiever`.
-
-## Development
-
-```powershell
-# rebuild
-.\Install.ps1
-
-# inspect what the matcher finds for a cached game, live
-.\tools\build-tools.ps1
-.\tools\TestMatch.exe "$env:LOCALAPPDATA\DolphinAchiever\cache\patch_189.json"
-```
-
-`TestMatch` prints the discovered location keys, their live values, the decoded rich
-presence, and the achievements matching your current position — the fastest way to see
-why a game does or doesn't work.
+| Path | What |
+|---|---|
+| `Patch Dolphin.cmd` | Double-click to open the patcher window |
+| `patcher/PatcherGui.ps1` | The window |
+| `patcher/Build-PatchedDolphin.ps1` | Does the work: detect, fetch, patch, build, install |
+| `patcher/PatcherCore.ps1` | Shared helpers (version detection, finding Git and Visual Studio) |
+| `patcher/patches/` | The two Dolphin patches |
 
 ## License
 
-MIT
+MIT for this repository. Dolphin itself is GPL-2.0-or-later; the patches are contributions
+to it under the same license.

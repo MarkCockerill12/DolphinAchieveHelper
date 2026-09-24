@@ -1,0 +1,8 @@
+# The patches must reach git apply byte-for-byte.
+*.patch -text
+
+# Windows scripts
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary

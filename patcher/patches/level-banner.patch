@@ -1,0 +1,1000 @@
+diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
+index 1eaa4d0..387367a 100644
+--- a/Source/Core/Core/AchievementManager.cpp
++++ b/Source/Core/Core/AchievementManager.cpp
+@@ -32,6 +32,7 @@
+ #include "Core/GeckoCode.h"
+ #include "Core/HW/Memmap.h"
+ #include "Core/HW/VideoInterface.h"
++#include "Core/LocationTracker.h"
+ #include "Core/PatchEngine.h"
+ #include "Core/PowerPC/MMU.h"
+ #include "Core/System.h"
+@@ -345,6 +346,8 @@ void AchievementManager::DoFrame()
+   {
+     std::lock_guard lg{m_lock};
+     rc_client_do_frame(m_client);
++    // Right after the frame, while the memory rcheevos just read is current.
++    RetroAchievements::LocationTracker::GetInstance().Update(m_client);
+   }
+   auto current_time = std::chrono::steady_clock::now();
+   if (current_time - m_last_rp_time > std::chrono::seconds{10})
+@@ -777,6 +780,8 @@ void AchievementManager::CloseGame()
+     m_system.store(nullptr, std::memory_order_release);
+     if (Config::Get(Config::RA_DISCORD_PRESENCE_ENABLED))
+       Discord::UpdateDiscordPresence();
++    // It points into the game data that unloading frees.
++    RetroAchievements::LocationTracker::GetInstance().Reset();
+     if (rc_client_get_game_info(m_client))
+       rc_client_unload_game(m_client);
+     INFO_LOG_FMT(ACHIEVEMENTS, "Game closed.");
+diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
+index e411239..d13e3a7 100644
+--- a/Source/Core/Core/CMakeLists.txt
++++ b/Source/Core/Core/CMakeLists.txt
+@@ -2,6 +2,8 @@ add_library(core
+   AchievementApprovedHash.h
+   AchievementManager.cpp
+   AchievementManager.h
++  LocationTracker.cpp
++  LocationTracker.h
+   ActionReplay.cpp
+   ActionReplay.h
+   ARDecrypt.cpp
+diff --git a/Source/Core/Core/LocationTracker.cpp b/Source/Core/Core/LocationTracker.cpp
+new file mode 100644
+index 0000000..56fbdcf
+--- /dev/null
++++ b/Source/Core/Core/LocationTracker.cpp
+@@ -0,0 +1,615 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "Core/LocationTracker.h"
++
++#ifdef USE_RETRO_ACHIEVEMENTS
++
++#include <algorithm>
++#include <string>
++
++#include <fmt/format.h>
++#include <rcheevos/src/rc_client_internal.h>
++#include <rcheevos/src/rcheevos/rc_internal.h>
++
++#include "Common/Logging/Log.h"
++
++namespace RetroAchievements
++{
++namespace
++{
++// A level's memory is briefly inconsistent while it loads (name written before the mission
++// index, pointers pointing at freed data), so what matches must hold this many frames first.
++constexpr u32 SETTLE_FRAMES = 45;
++
++// A value that identifies a place has to tell many places apart. One with only a handful of
++// settings is a state flag or a mission number; an achievement placed by that alone would show
++// in every level (the second mission of every galaxy, say), so it needs a stronger one too.
++constexpr size_t MIN_STRONG_VALUES = 5;
++
++// "Reset unless name window A or window B ..." is only read as "the name is A..B" when the
++// windows are this close together, i.e. plausibly parts of one field.
++constexpr u32 MAX_WINDOW_SPAN = 16;
++
++// On-screen time grows with the number of entries so there is time to read them.
++constexpr float BANNER_BASE_SECONDS = 4.0f;
++constexpr float BANNER_SECONDS_PER_ENTRY = 1.5f;
++constexpr float BANNER_MIN_SECONDS = 6.0f;
++constexpr float BANNER_MAX_SECONDS = 15.0f;
++
++// A plain read of memory, directly or through a pointer chain, that is not transformed or
++// combined with anything else. Delta reads count: while the player stays put the previous
++// frame's value is the current one.
++bool IsLocationRead(const rc_operand_t& operand)
++{
++  if (operand.type != RC_OPERAND_ADDRESS && operand.type != RC_OPERAND_DELTA)
++    return false;
++  // Integer sizes only; floats, MBF and doubles come after 32-bit big endian.
++  if (operand.size > RC_MEMSIZE_32_BITS_BE || operand.value.memref == nullptr)
++    return false;
++
++  const rc_memref_t* memref = operand.value.memref;
++  if (memref->value.memref_type == RC_MEMREF_TYPE_MEMREF)
++    return true;
++  if (memref->value.memref_type != RC_MEMREF_TYPE_MODIFIED_MEMREF)
++    return false;
++
++  // AddAddress chains become an indirect read; AddSource and friends become other modifiers,
++  // which fold several values together and are no use for telling where the player is.
++  const auto* modified = reinterpret_cast<const rc_modified_memref_t*>(memref);
++  return modified->modifier_type == RC_OPERATOR_INDIRECT_READ &&
++         modified->modifier.type == RC_OPERAND_CONST &&
++         rc_operand_is_memref(&modified->parent);
++}
++
++bool IsRequirement(u8 type)
++{
++  return type == RC_CONDITION_STANDARD || type == RC_CONDITION_TRIGGER ||
++         type == RC_CONDITION_MEASURED || type == RC_CONDITION_MEASURED_IF;
++}
++
++bool IsNegation(u8 type)
++{
++  return type == RC_CONDITION_RESET_IF || type == RC_CONDITION_PAUSE_IF;
++}
++}  // namespace
++
++LocationTracker& LocationTracker::GetInstance()
++{
++  static LocationTracker instance;
++  return instance;
++}
++
++double LocationTracker::Key::Score() const
++{
++  return static_cast<double>(achievements.size()) *
++         static_cast<double>(std::min<size_t>(values.size(), 50));
++}
++
++void LocationTracker::Reset()
++{
++  m_game = nullptr;
++  m_candidates.clear();
++  m_candidate_index.clear();
++  m_keys.clear();
++  m_located.clear();
++  m_reading.clear();
++  m_matches.clear();
++  m_stable_frames = 0;
++  m_settled.reset();
++  m_last_shown.clear();
++  m_seen_nonzero = false;
++
++  std::lock_guard lg{m_banner_mutex};
++  m_banner.reset();
++}
++
++size_t LocationTracker::AddCandidate(const rc_operand_t& operand)
++{
++  const std::pair<const void*, u8> id{operand.value.memref, operand.size};
++  if (const auto it = m_candidate_index.find(id); it != m_candidate_index.end())
++    return it->second;
++
++  Key key{};
++  key.operand = operand;
++  key.operand.type = RC_OPERAND_ADDRESS;
++
++  const rc_memref_t* memref = operand.value.memref;
++  if (memref->value.memref_type == RC_MEMREF_TYPE_MODIFIED_MEMREF)
++  {
++    const auto* modified = reinterpret_cast<const rc_modified_memref_t*>(memref);
++    key.chain = {modified->parent.value.memref, modified->parent.type};
++    key.offset = modified->modifier.value.num;
++  }
++  else
++  {
++    key.chain = {nullptr, 0};
++    key.offset = memref->address;
++  }
++
++  m_candidates.push_back(std::move(key));
++  m_candidate_index.emplace(id, m_candidates.size() - 1);
++  return m_candidates.size() - 1;
++}
++
++// Pull every location constraint out of one condition group.
++//
++// Conditions are handled a chain at a time: AndNext/OrNext links plus the condition that ends
++// them. A chain ending in a plain requirement must be true; one ending in ResetIf/PauseIf must be
++// false. Location shows up in both shapes:
++//   0xG20=1164404563                  "is EggStarGalaxy"
++//   R:0xG40!=3                        "reset unless mission 3"
++//   N:0xG40!=1_R:0xG40!=4             "reset unless mission 1 or 4"
++//   O:0xH10=2_0xH10=5                 "stage 2 or 5"
++// Chains with hit counting or ResetNextIf are stateful and are skipped rather than guessed at.
++void LocationTracker::ExtractConstraints(const rc_condset_t* condset,
++                                         std::vector<Constraint>& out)
++{
++  std::vector<const rc_condition_t*> links;
++  for (const rc_condition_t* cond = condset->conditions; cond != nullptr; cond = cond->next)
++  {
++    switch (cond->type)
++    {
++    case RC_CONDITION_ADD_ADDRESS:
++    case RC_CONDITION_ADD_SOURCE:
++    case RC_CONDITION_SUB_SOURCE:
++    case RC_CONDITION_REMEMBER:
++      // Already folded into the operand of the condition they feed.
++      continue;
++    case RC_CONDITION_AND_NEXT:
++    case RC_CONDITION_OR_NEXT:
++    case RC_CONDITION_RESET_NEXT_IF:
++    case RC_CONDITION_ADD_HITS:
++    case RC_CONDITION_SUB_HITS:
++      links.push_back(cond);
++      continue;
++    default:
++      break;
++    }
++
++    std::vector<const rc_condition_t*> terms = std::move(links);
++    links.clear();
++    const size_t num_links = terms.size();
++    terms.push_back(cond);
++
++    bool all_and = true;
++    bool all_or = true;
++    bool stateful = false;
++    for (size_t i = 0; i < num_links; ++i)
++    {
++      all_and &= terms[i]->type == RC_CONDITION_AND_NEXT;
++      all_or &= terms[i]->type == RC_CONDITION_OR_NEXT;
++      stateful |= terms[i]->type != RC_CONDITION_AND_NEXT && terms[i]->type != RC_CONDITION_OR_NEXT;
++    }
++    if (stateful)
++      continue;
++
++    // A hit target on a link makes the chain stateful; the final condition may carry one
++    // ("15 times while in stage X" still needs stage X).
++    const auto usable = [cond](const rc_condition_t* term, u8 oper) {
++      return term->oper == oper && IsLocationRead(term->operand1) &&
++             term->operand2.type == RC_OPERAND_CONST &&
++             (term == cond || term->required_hits == 0);
++    };
++    const auto single = [this](const rc_condition_t* term) {
++      Constraint c;
++      c.alts.push_back({AddCandidate(term->operand1), {term->operand2.value.num}});
++      c.delta = term->operand1.type == RC_OPERAND_DELTA;
++      return c;
++    };
++    // Every term as one "any of" constraint, merging terms that read the same key.
++    const auto any_of = [this, &terms]() {
++      Constraint c;
++      c.delta = true;
++      for (const rc_condition_t* term : terms)
++      {
++        const size_t key = AddCandidate(term->operand1);
++        auto it = std::find_if(c.alts.begin(), c.alts.end(),
++                               [key](const Alternative& a) { return a.key == key; });
++        if (it == c.alts.end())
++          c.alts.push_back({key, {term->operand2.value.num}});
++        else
++          it->values.insert(term->operand2.value.num);
++        c.delta &= term->operand1.type == RC_OPERAND_DELTA;
++      }
++      return c;
++    };
++    const auto all_usable = [&terms, &usable](u8 oper) {
++      return std::all_of(terms.begin(), terms.end(),
++                         [&](const rc_condition_t* t) { return usable(t, oper); });
++    };
++
++    if (IsRequirement(cond->type))
++    {
++      if (all_and)
++      {
++        // Every term must hold, so each equality is a constraint by itself.
++        for (const rc_condition_t* term : terms)
++        {
++          if (usable(term, RC_OPERATOR_EQ))
++            out.push_back(single(term));
++        }
++      }
++      else if (all_or && all_usable(RC_OPERATOR_EQ))
++      {
++        out.push_back(any_of());
++      }
++    }
++    else if (IsNegation(cond->type))
++    {
++      if (all_or)
++      {
++        // not (a or b) == not a and not b: each inequality is a constraint by itself.
++        for (const rc_condition_t* term : terms)
++        {
++          if (usable(term, RC_OPERATOR_NE))
++            out.push_back(single(term));
++        }
++      }
++      else if (all_and && all_usable(RC_OPERATOR_NE))
++      {
++        // not (a != x and b != y) == a == x or b == y
++        Constraint c = any_of();
++        c.windows = std::all_of(c.alts.begin(), c.alts.end(),
++                                [](const Alternative& a) { return a.values.size() == 1; });
++        out.push_back(std::move(c));
++      }
++    }
++  }
++}
++
++// Merge one group's constraints over the selected keys into its fingerprint.
++LocationTracker::Group LocationTracker::ToFingerprint(const std::vector<Constraint>& raw,
++                                                      const std::vector<int>& remap) const
++{
++  // Single-key constraints, intersected per key. Live and delta reads are kept apart: when they
++  // disagree the achievement is about moving from one place to another ("reach B without a
++  // launch star") and the place it starts from is where it is worth knowing about.
++  std::map<std::pair<size_t, bool>, ValueSet> singles;
++  std::vector<Constraint> multi;
++
++  const auto add_single = [&singles](size_t key, bool delta, const ValueSet& values) {
++    auto [it, inserted] = singles.try_emplace({key, delta}, values);
++    if (!inserted)
++    {
++      ValueSet both;
++      std::set_intersection(it->second.begin(), it->second.end(), values.begin(), values.end(),
++                            std::inserter(both, both.end()));
++      it->second = std::move(both);
++    }
++  };
++
++  for (const Constraint& constraint : raw)
++  {
++    Constraint mapped = constraint;
++    bool all_known = true;
++    for (Alternative& alt : mapped.alts)
++    {
++      const int key = remap[alt.key];
++      all_known &= key >= 0;
++      alt.key = static_cast<size_t>(key);
++    }
++    // An alternative on a key that is not a location could be the one that holds, so the
++    // constraint says nothing about location.
++    if (!all_known)
++      continue;
++
++    bool split = mapped.windows && IsStrong(mapped);
++    if (split)
++    {
++      const auto [lo, hi] = std::minmax_element(
++          mapped.alts.begin(), mapped.alts.end(), [this](const Alternative& a, const Alternative& b) {
++            return m_keys[a.key].offset < m_keys[b.key].offset;
++          });
++      split = m_keys[hi->key].offset - m_keys[lo->key].offset <= MAX_WINDOW_SPAN;
++    }
++    if (mapped.alts.size() == 1 || split)
++    {
++      for (const Alternative& alt : mapped.alts)
++        add_single(alt.key, mapped.delta, alt.values);
++    }
++    else
++    {
++      multi.push_back(std::move(mapped));
++    }
++  }
++
++  std::vector<Constraint> result;
++  for (const auto& [slot, values] : singles)
++  {
++    const auto [key, delta] = slot;
++    ValueSet chosen = values;
++    if (delta)
++    {
++      if (singles.contains({key, false}))
++        continue;  // handled with the live read below
++    }
++    else if (const auto it = singles.find({key, true}); it != singles.end())
++    {
++      ValueSet both;
++      std::set_intersection(values.begin(), values.end(), it->second.begin(), it->second.end(),
++                            std::inserter(both, both.end()));
++      chosen = both.empty() ? it->second : std::move(both);
++    }
++    if (chosen.empty())
++      return std::nullopt;
++
++    Constraint c;
++    c.alts.push_back({key, std::move(chosen)});
++    result.push_back(std::move(c));
++  }
++  for (Constraint& c : multi)
++    result.push_back(std::move(c));
++  return result;
++}
++
++void LocationTracker::Build(rc_client_t* client)
++{
++  Reset();
++  m_game = client->game;
++
++  std::vector<const rc_client_achievement_t*> infos;
++  std::vector<std::vector<std::vector<Constraint>>> raw;
++  for (const rc_client_subset_info_t* subset = client->game->subsets; subset != nullptr;
++       subset = subset->next)
++  {
++    for (u32 i = 0; i < subset->public_.num_achievements; ++i)
++    {
++      const rc_client_achievement_info_t& achievement = subset->achievements[i];
++      if (achievement.trigger == nullptr)
++        continue;
++
++      std::vector<std::vector<Constraint>> groups;
++      if (achievement.trigger->requirement != nullptr)
++        ExtractConstraints(achievement.trigger->requirement, groups.emplace_back());
++      else
++        groups.emplace_back();
++      for (const rc_condset_t* alt = achievement.trigger->alternative; alt != nullptr;
++           alt = alt->next)
++      {
++        ExtractConstraints(alt, groups.emplace_back());
++      }
++
++      for (const auto& group : groups)
++      {
++        for (const Constraint& constraint : group)
++        {
++          for (const Alternative& alt : constraint.alts)
++          {
++            Key& key = m_candidates[alt.key];
++            key.values.insert(alt.values.begin(), alt.values.end());
++            key.achievements.insert(achievement.public_.id);
++          }
++        }
++      }
++      infos.push_back(&achievement.public_);
++      raw.push_back(std::move(groups));
++    }
++  }
++
++  // The pointer chain whose reads discriminate the most: that is where the game keeps its
++  // "where am I". It degenerates to plain addresses for games with a flat stage variable.
++  std::map<std::pair<const void*, u8>, double> chain_score;
++  for (const Key& key : m_candidates)
++  {
++    if (key.values.size() >= 2)
++      chain_score[key.chain] += key.Score();
++  }
++  if (chain_score.empty())
++  {
++    INFO_LOG_FMT(ACHIEVEMENTS, "Location tracker: this set has no location reads.");
++    return;
++  }
++  const auto best = std::max_element(chain_score.begin(), chain_score.end(),
++                                     [](const auto& a, const auto& b) { return a.second < b.second; })
++                        ->first;
++
++  // Every read on that chain that ever takes two or more values can narrow down where the
++  // player is; the ones with enough values to name a place by themselves are "strong".
++  std::vector<int> remap(m_candidates.size(), -1);
++  bool any_strong = false;
++  for (size_t i = 0; i < m_candidates.size(); ++i)
++  {
++    if (m_candidates[i].chain != best || m_candidates[i].values.size() < 2)
++      continue;
++    Key key = m_candidates[i];
++    key.strong = key.values.size() >= MIN_STRONG_VALUES;
++    any_strong |= key.strong;
++    remap[i] = static_cast<int>(m_keys.size());
++    m_keys.push_back(std::move(key));
++  }
++  if (!any_strong)
++  {
++    INFO_LOG_FMT(ACHIEVEMENTS, "Location tracker: no read in this set identifies a place; off.");
++    m_keys.clear();
++    return;
++  }
++
++  for (size_t i = 0; i < infos.size(); ++i)
++  {
++    Located located{infos[i], {}};
++    bool has_location = false;
++    for (const auto& group : raw[i])
++    {
++      Group fingerprint = ToFingerprint(group, remap);
++      has_location |= fingerprint.has_value() && !fingerprint->empty();
++      located.groups.push_back(std::move(fingerprint));
++    }
++    if (has_location)
++      m_located.push_back(std::move(located));
++  }
++
++  INFO_LOG_FMT(ACHIEVEMENTS, "Location tracker: {} keys, {} of {} achievements have a location.",
++               m_keys.size(), m_located.size(), infos.size());
++  for (const Key& key : m_keys)
++  {
++    DEBUG_LOG_FMT(ACHIEVEMENTS, "  key +{:#x}{}: {} values, {} achievements", key.offset,
++                  key.strong ? " (strong)" : "", key.values.size(), key.achievements.size());
++  }
++}
++
++bool LocationTracker::IsStrong(const Constraint& constraint) const
++{
++  return std::all_of(constraint.alts.begin(), constraint.alts.end(),
++                     [this](const Alternative& a) { return m_keys[a.key].strong; });
++}
++
++bool LocationTracker::GroupMatches(const Group& group, const std::vector<u32>& current,
++                                   bool* strong) const
++{
++  *strong = false;
++  if (!group)
++    return false;
++  for (const Constraint& constraint : *group)
++  {
++    const bool holds =
++        std::any_of(constraint.alts.begin(), constraint.alts.end(), [&](const Alternative& a) {
++          return a.values.contains(current[a.key]);
++        });
++    if (!holds)
++      return false;
++    *strong |= IsStrong(constraint);
++  }
++  return true;
++}
++
++// A trigger needs its core group and, if it has alt groups, at least one of them. The
++// achievement belongs here when those groups' location constraints all hold and at least one
++// of them is on a strong key.
++bool LocationTracker::Matches(const Located& located, const std::vector<u32>& current) const
++{
++  bool strong = false;
++  if (!GroupMatches(located.groups[0], current, &strong))
++    return false;
++
++  if (located.groups.size() > 1)
++  {
++    bool some_alt_holds = false;
++    for (size_t i = 1; i < located.groups.size(); ++i)
++    {
++      bool alt_strong;
++      if (GroupMatches(located.groups[i], current, &alt_strong))
++      {
++        some_alt_holds = true;
++        strong |= alt_strong;
++      }
++    }
++    if (!some_alt_holds)
++      return false;
++  }
++  return strong;
++}
++
++// Locked achievements that belong to the current place, missables first, then by points.
++std::vector<u32> LocationTracker::FindMatches(const std::vector<u32>& current) const
++{
++  std::vector<const rc_client_achievement_t*> found;
++  for (const Located& located : m_located)
++  {
++    if (located.info->state == RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE && Matches(located, current))
++      found.push_back(located.info);
++  }
++  std::stable_sort(found.begin(), found.end(), [](const auto* a, const auto* b) {
++    const bool a_missable = a->type == RC_CLIENT_ACHIEVEMENT_TYPE_MISSABLE;
++    const bool b_missable = b->type == RC_CLIENT_ACHIEVEMENT_TYPE_MISSABLE;
++    if (a_missable != b_missable)
++      return a_missable;
++    return a->points > b->points;
++  });
++
++  std::vector<u32> ids;
++  for (const auto* info : found)
++    ids.push_back(info->id);
++  return ids;
++}
++
++void LocationTracker::Update(rc_client_t* client)
++{
++  if (client == nullptr || client->game == nullptr)
++    return;
++  if (client->game != m_game)
++    Build(client);
++  if (m_keys.empty())
++    return;
++
++  std::vector<u32> reading(m_keys.size());
++  for (size_t i = 0; i < m_keys.size(); ++i)
++  {
++    rc_typed_value_t value;
++    rc_evaluate_operand(&value, &m_keys[i].operand, nullptr);
++    reading[i] = value.value.u32;
++  }
++
++  // Straight after boot RAM is still zeroed, and zero is a real place in plenty of games
++  // (the first stage), so wait until the game has written something.
++  if (!m_seen_nonzero)
++  {
++    if (std::all_of(reading.begin(), reading.end(), [](u32 v) { return v == 0; }))
++      return;
++    m_seen_nonzero = true;
++  }
++
++  // Settle on what matches rather than on the raw reading, so a value that keeps changing
++  // but decides nothing (a flag a few achievements test) cannot hold the banner back.
++  if (reading != m_reading)
++  {
++    m_reading = std::move(reading);
++    std::vector<u32> matches = FindMatches(m_reading);
++    if (matches != m_matches)
++    {
++      m_matches = std::move(matches);
++      m_stable_frames = 0;
++    }
++  }
++  if (m_stable_frames < SETTLE_FRAMES)
++  {
++    ++m_stable_frames;
++    return;
++  }
++  if (m_settled != m_matches)
++  {
++    m_settled = m_matches;
++    Settled(m_matches);
++  }
++}
++
++void LocationTracker::Settled(const std::vector<u32>& ids)
++{
++  std::lock_guard lg{m_banner_mutex};
++  if (ids.empty())
++  {
++    // Somewhere with nothing to show (a menu, a loading screen): coming back should show the
++    // list again.
++    m_last_shown.clear();
++    m_banner.reset();
++    return;
++  }
++
++  // Only when something new can be earned here. Unlocking one, or a flag narrowing the list,
++  // does not bring the banner back.
++  if (std::all_of(ids.begin(), ids.end(), [this](u32 id) { return m_last_shown.contains(id); }))
++    return;
++
++  std::string reading;
++  for (size_t i = 0; i < m_reading.size(); ++i)
++    reading += fmt::format("{}{:x}", i == 0 ? "" : " ", m_reading[i]);
++  INFO_LOG_FMT(ACHIEVEMENTS, "Location tracker: {} achievements here [{}]", ids.size(), reading);
++
++  m_last_shown = std::set<u32>(ids.begin(), ids.end());
++  const float seconds =
++      std::clamp(BANNER_BASE_SECONDS + BANNER_SECONDS_PER_ENTRY * ids.size(), BANNER_MIN_SECONDS,
++                 BANNER_MAX_SECONDS);
++  m_banner = Banner{ids, std::chrono::steady_clock::now(), std::chrono::duration<float>(seconds),
++                    ++m_banner_serial};
++}
++
++std::optional<LocationTracker::Banner> LocationTracker::GetBanner() const
++{
++  std::lock_guard lg{m_banner_mutex};
++  if (m_banner && std::chrono::steady_clock::now() - m_banner->start > m_banner->duration)
++    m_banner.reset();
++  return m_banner;
++}
++}  // namespace RetroAchievements
++
++#endif  // USE_RETRO_ACHIEVEMENTS
+diff --git a/Source/Core/Core/LocationTracker.h b/Source/Core/Core/LocationTracker.h
+new file mode 100644
+index 0000000..309017e
+--- /dev/null
++++ b/Source/Core/Core/LocationTracker.h
+@@ -0,0 +1,134 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#ifdef USE_RETRO_ACHIEVEMENTS
++
++#include <chrono>
++#include <map>
++#include <mutex>
++#include <optional>
++#include <set>
++#include <utility>
++#include <vector>
++
++#include <rcheevos/include/rc_client.h>
++#include <rcheevos/include/rc_runtime_types.h>
++
++#include "Common/CommonTypes.h"
++
++namespace RetroAchievements
++{
++// Works out which achievements can be earned where the player is standing, so they can be
++// listed for a few seconds on arrival. Without this an achievement is only visible once it is
++// primed (a challenge indicator) or unlocked, so "do X in under 30 seconds" or "collect every
++// Y" gives no hint beforehand.
++//
++// Nothing here is game specific. The location is inferred from the achievement set itself:
++// the pointer chain (or flat memory) whose reads the most achievements compare against the
++// widest spread of constants is where the game keeps its "where am I" values - a stage id, a
++// stage name held as text, a mission number. An achievement belongs to the current place when
++// every one of its constraints on those values holds and at least one of them is on a value
++// with enough distinct settings to actually tell places apart.
++class LocationTracker
++{
++public:
++  struct Banner
++  {
++    std::vector<u32> ids;
++    std::chrono::steady_clock::time_point start;
++    std::chrono::duration<float> duration;
++    u64 serial = 0;
++  };
++
++  static LocationTracker& GetInstance();
++
++  // Call with the AchievementManager lock held, once per emulated frame after
++  // rc_client_do_frame, so the memory values it reads are the ones rcheevos just refreshed.
++  void Update(rc_client_t* client);
++  // Call with the AchievementManager lock held when the game is closed. The tracker keeps
++  // pointers into the loaded game, which rc_client frees on unload.
++  void Reset();
++
++  // Thread safe. The banner to draw right now, if one is still on screen.
++  std::optional<Banner> GetBanner() const;
++
++private:
++  LocationTracker() = default;
++
++  using ValueSet = std::set<u32>;
++
++  // A memory read that can tell the player's location apart.
++  struct Key
++  {
++    // A live (non-delta) copy of an operand that reads this key, for rc_evaluate_operand.
++    rc_operand_t operand;
++    // The read's pointer chain (its parent memref and access type), null for a flat address.
++    std::pair<const void*, u8> chain;
++    u32 offset;
++    ValueSet values;
++    std::set<u32> achievements;
++    // Takes enough distinct values to identify a place by itself.
++    bool strong = false;
++
++    double Score() const;
++  };
++
++  struct Alternative
++  {
++    size_t key;
++    ValueSet values;
++  };
++
++  // Satisfied when any alternative's key currently holds one of its values.
++  struct Constraint
++  {
++    std::vector<Alternative> alts;
++    // Read through delta values: "where the player was on the previous frame".
++    bool delta = false;
++    // Came from "reset unless a==x or b==y or ..." with one value per key. Set authors write
++    // "reset unless the level name is X" this way, splitting the name into 4-byte windows.
++    bool windows = false;
++  };
++
++  // A condition group's constraints; nullopt when they contradict so the group can never hold.
++  using Group = std::optional<std::vector<Constraint>>;
++
++  struct Located
++  {
++    const rc_client_achievement_t* info;
++    // Core group first, then each alt group.
++    std::vector<Group> groups;
++  };
++
++  void Build(rc_client_t* client);
++  size_t AddCandidate(const rc_operand_t& operand);
++  void ExtractConstraints(const rc_condset_t* condset, std::vector<Constraint>& out);
++  Group ToFingerprint(const std::vector<Constraint>& raw, const std::vector<int>& remap) const;
++  bool IsStrong(const Constraint& constraint) const;
++  bool GroupMatches(const Group& group, const std::vector<u32>& current, bool* strong) const;
++  bool Matches(const Located& located, const std::vector<u32>& current) const;
++  std::vector<u32> FindMatches(const std::vector<u32>& current) const;
++  void Settled(const std::vector<u32>& ids);
++
++  // Guarded by the AchievementManager lock.
++  const void* m_game = nullptr;
++  std::vector<Key> m_candidates;
++  std::map<std::pair<const void*, u8>, size_t> m_candidate_index;
++  std::vector<Key> m_keys;
++  std::vector<Located> m_located;
++  std::vector<u32> m_reading;
++  std::vector<u32> m_matches;
++  u32 m_stable_frames = 0;
++  std::optional<std::vector<u32>> m_settled;
++  std::set<u32> m_last_shown;
++  bool m_seen_nonzero = false;
++
++  mutable std::mutex m_banner_mutex;
++  mutable std::optional<Banner> m_banner;
++  u64 m_banner_serial = 0;
++};
++}  // namespace RetroAchievements
++
++#endif  // USE_RETRO_ACHIEVEMENTS
+diff --git a/Source/Core/DolphinLib.props b/Source/Core/DolphinLib.props
+index 9959caf..01e0871 100644
+--- a/Source/Core/DolphinLib.props
++++ b/Source/Core/DolphinLib.props
+@@ -187,6 +187,7 @@
+     <ClInclude Include="Common\WorkQueueThread.h" />
+     <ClInclude Include="Core\AchievementApprovedHash.h" />
+     <ClInclude Include="Core\AchievementManager.h" />
++    <ClInclude Include="Core\LocationTracker.h" />
+     <ClInclude Include="Core\ActionReplay.h" />
+     <ClInclude Include="Core\ARDecrypt.h" />
+     <ClInclude Include="Core\Boot\Boot.h" />
+@@ -899,6 +900,7 @@
+     <ClCompile Include="Common\WindowsRegistry.cpp" />
+     <ClCompile Include="Common\Version.cpp" />
+     <ClCompile Include="Core\AchievementManager.cpp" />
++    <ClCompile Include="Core\LocationTracker.cpp" />
+     <ClCompile Include="Core\ActionReplay.cpp" />
+     <ClCompile Include="Core\ARDecrypt.cpp" />
+     <ClCompile Include="Core\Boot\Boot_BS2Emu.cpp" />
+diff --git a/Source/Core/VideoCommon/OnScreenUI.cpp b/Source/Core/VideoCommon/OnScreenUI.cpp
+index ea15c49..1c6cde9 100644
+--- a/Source/Core/VideoCommon/OnScreenUI.cpp
++++ b/Source/Core/VideoCommon/OnScreenUI.cpp
+@@ -14,6 +14,7 @@
+ #include "Core/Config/GraphicsSettings.h"
+ #include "Core/Config/MainSettings.h"
+ #include "Core/Config/NetplaySettings.h"
++#include "Core/LocationTracker.h"
+ #include "Core/Movie.h"
+ #include "Core/System.h"
+ 
+@@ -31,6 +32,8 @@
+ #include "VideoCommon/VertexManagerBase.h"
+ #include "VideoCommon/VideoConfig.h"
+ 
++#include <algorithm>
++#include <chrono>
+ #include <inttypes.h>
+ #include <mutex>
+ 
+@@ -433,11 +436,119 @@ void OnScreenUI::DrawChallengesAndLeaderboards()
+       for (const auto& value : leaderboard_progress)
+         ImGui::TextUnformatted(value.c_str());
+     }
++    leaderboard_y -= ImGui::GetWindowHeight();
+     ImGui::End();
+   }
++
++  DrawLevelAchievements(leaderboard_y);
+ #endif  // USE_RETRO_ACHIEVEMENTS
+ }
+ 
++#ifdef USE_RETRO_ACHIEVEMENTS
++// Lists the achievements that can be earned where the player just arrived, for a few seconds,
++// so ones that would only appear once primed or unlocked can be seen beforehand. Stacks above
++// the challenge indicators and leaderboard trackers. Caller holds the AchievementManager lock.
++void OnScreenUI::DrawLevelAchievements(float bottom_y)
++{
++  constexpr float FADE_IN_SECONDS = 0.3f;
++  constexpr float FADE_OUT_SECONDS = 1.0f;
++  constexpr size_t MAX_ROWS = 8;
++
++  const auto banner = RetroAchievements::LocationTracker::GetInstance().GetBanner();
++  if (!banner)
++  {
++    if (!m_level_texture_map.empty())
++      m_level_texture_map.clear();
++    return;
++  }
++  if (banner->serial != m_level_banner_serial)
++  {
++    m_level_banner_serial = banner->serial;
++    m_level_texture_map.clear();
++  }
++
++  auto& instance = AchievementManager::GetInstance();
++  const auto& challenges = instance.GetActiveChallenges();
++
++  std::vector<const rc_client_achievement_t*> rows;
++  for (const u32 id : banner->ids)
++  {
++    // A primed challenge already shows with its own label.
++    if (challenges.contains(id))
++      continue;
++    // Skip anything unlocked since the banner went up.
++    const auto* info = instance.GetAchievementInfo(id);
++    if (info == nullptr || info->state != RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE)
++      continue;
++    rows.push_back(info);
++  }
++  if (rows.empty())
++    return;
++
++  const float elapsed =
++      std::chrono::duration<float>(std::chrono::steady_clock::now() - banner->start).count();
++  const float alpha = std::clamp(std::min(elapsed / FADE_IN_SECONDS,
++                                          (banner->duration.count() - elapsed) / FADE_OUT_SECONDS),
++                                 0.0f, 1.0f);
++
++  const float scale = ImGui::GetIO().DisplaySize.y / 1024.0f;
++  const float icon_size = 40.0f * scale;
++  const float text_width = 22.0f * ImGui::GetFontSize();
++  const ImVec4 heading_color(1.0f, 0.84f, 0.0f, 1.0f);
++  const ImVec4 description_color(0.72f, 0.76f, 0.84f, 1.0f);
++  const ImVec4 note_color(0.6f, 0.6f, 0.6f, 1.0f);
++
++  ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
++  ImGui::SetNextWindowSize(ImVec2(0, 0));
++  ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x, bottom_y), 0, ImVec2(1, 1));
++  if (ImGui::Begin("LevelAchievements", nullptr,
++                   ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoInputs |
++                       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
++                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav |
++                       ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing))
++  {
++    ImGui::TextColored(heading_color, "Achievements in this level");
++
++    const size_t shown = std::min(rows.size(), MAX_ROWS);
++    for (size_t i = 0; i < shown; ++i)
++    {
++      const rc_client_achievement_t* info = rows[i];
++      ImGui::Spacing();
++
++      auto& [source, texture] = m_level_texture_map[info->id];
++      const auto& icon = instance.GetAchievementBadge(info->id, true);
++      if (source != icon.data.data() && icon.width > 0 && icon.height > 0)
++      {
++        TextureConfig tex_config(icon.width, icon.height, 1, 1, 1, AbstractTextureFormat::RGBA8, 0,
++                                 AbstractTextureType::Texture_2DArray);
++        texture = g_gfx->CreateTexture(tex_config);
++        texture->Load(0, icon.width, icon.height, icon.width, icon.data.data(),
++                      sizeof(u32) * icon.width * icon.height);
++        source = icon.data.data();
++      }
++      if (texture)
++      {
++        ImGui::Image(*texture.get(), ImVec2(icon_size, icon_size));
++        ImGui::SameLine();
++      }
++
++      ImGui::BeginGroup();
++      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + text_width);
++      ImGui::Text("%s (%u)", info->title, info->points);
++      ImGui::PushStyleColor(ImGuiCol_Text, description_color);
++      ImGui::TextUnformatted(info->description);
++      ImGui::PopStyleColor();
++      ImGui::PopTextWrapPos();
++      ImGui::EndGroup();
++    }
++    if (rows.size() > shown)
++      ImGui::TextColored(note_color, "+%zu more", rows.size() - shown);
++  }
++  ImGui::End();
++  ImGui::PopStyleVar();
++}
++#endif  // USE_RETRO_ACHIEVEMENTS
++
+ void OnScreenUI::Finalize()
+ {
+   auto lock = GetImGuiLock();
+diff --git a/Source/Core/VideoCommon/OnScreenUI.h b/Source/Core/VideoCommon/OnScreenUI.h
+index e9a14e0..5e32261 100644
+--- a/Source/Core/VideoCommon/OnScreenUI.h
++++ b/Source/Core/VideoCommon/OnScreenUI.h
+@@ -63,6 +63,7 @@ public:
+ private:
+   void DrawDebugText();
+   void DrawChallengesAndLeaderboards();
++  void DrawLevelAchievements(float bottom_y);
+   void UpdateImguiTexture(ImTextureData* tex);
+ 
+   // ImGui resources.
+@@ -79,6 +80,10 @@ private:
+ 
+ #ifdef USE_RETRO_ACHIEVEMENTS
+   std::map<int, std::unique_ptr<AbstractTexture>, std::less<>> m_challenge_texture_map;
++  // Locked badges for the level banner, with the badge pixels each was made from so a
++  // placeholder is replaced once the real badge has downloaded.
++  std::map<u32, std::pair<const void*, std::unique_ptr<AbstractTexture>>> m_level_texture_map;
++  u64 m_level_banner_serial = 0;
+ #endif  // USE_RETRO_ACHIEVEMENTS
+ 
+   bool m_ready = false;
+diff --git a/Source/VSProps/Base.Dolphin.props b/Source/VSProps/Base.Dolphin.props
+index 93d58df..fb97ed6 100644
+--- a/Source/VSProps/Base.Dolphin.props
++++ b/Source/VSProps/Base.Dolphin.props
+@@ -9,6 +9,7 @@
+     <ClCompile>
+       <!--Dolphin includes are relative to Source\Core-->
+       <AdditionalIncludeDirectories>$(CoreDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
++      <AdditionalIncludeDirectories>$(ExternalsDir)rcheevos\rcheevos\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+ 
+       <!--For now, header-only libs don't have their own vcxproj/exports, so just supply their include paths to all Dolphin code-->
+       <AdditionalIncludeDirectories>$(ExternalsDir)FFmpeg-bin\$(Platform)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

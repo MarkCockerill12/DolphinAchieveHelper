@@ -1,13 +1,6 @@
-# build output
-*.exe
-*.pdb
-obj/
-bin/
-
-# cached RetroAchievements data pulled at runtime / during testing
-tools/patch_*.json
-data/
+# Patcher logs
 *.log
 
-# local backups
-*.achiever-backup
+# Build output, should any end up here
+*.exe
+*.pdb
