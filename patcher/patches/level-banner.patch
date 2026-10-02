@@ -41,12 +41,57 @@ index e411239..d13e3a7 100644
    ActionReplay.cpp
    ActionReplay.h
    ARDecrypt.cpp
+diff --git a/Source/Core/Core/HotkeyManager.cpp b/Source/Core/Core/HotkeyManager.cpp
+index 915dc0d..90ef4b8 100644
+--- a/Source/Core/Core/HotkeyManager.cpp
++++ b/Source/Core/Core/HotkeyManager.cpp
+@@ -37,6 +37,7 @@ constexpr std::array<const char*, NUM_HOTKEYS> s_hotkey_labels{{
+     _trans("Control NetPlay Golf Mode"),
+ #ifdef USE_RETRO_ACHIEVEMENTS
+     _trans("Open Achievements"),
++    _trans("Show Level Achievements"),
+ #endif  // USE_RETRO_ACHIEVEMENTS
+ 
+     _trans("Volume Down"),
+@@ -294,7 +295,7 @@ struct HotkeyGroupInfo
+ 
+ constexpr std::array<HotkeyGroupInfo, NUM_HOTKEY_GROUPS> s_groups_info = {
+ #ifdef USE_RETRO_ACHIEVEMENTS
+-    {{_trans("General"), HK_OPEN, HK_OPEN_ACHIEVEMENTS},
++    {{_trans("General"), HK_OPEN, HK_SHOW_LEVEL_ACHIEVEMENTS},
+ #else   // USE_RETRO_ACHIEVEMENTS
+     {{_trans("General"), HK_OPEN, HK_REQUEST_GOLF_CONTROL},
+ #endif  // USE_RETRO_ACHIEVEMENTS
+@@ -418,6 +419,11 @@ void HotkeyManager::LoadDefaults(const ControllerInterface& ciface)
+ #endif
+ #ifdef USE_RETRO_ACHIEVEMENTS
+   set_key_expression(HK_OPEN_ACHIEVEMENTS, hotkey_string({"Alt", "A"}));
++#ifdef _WIN32
++  set_key_expression(HK_SHOW_LEVEL_ACHIEVEMENTS, "APOSTROPHE");
++#else
++  set_key_expression(HK_SHOW_LEVEL_ACHIEVEMENTS, "apostrophe");
++#endif
+ #endif  // USE_RETRO_ACHIEVEMENTS
+   set_key_expression(HK_STEP, "F11");
+   set_key_expression(HK_STEP_OVER, hotkey_string({"Shift", "F10"}));
+diff --git a/Source/Core/Core/HotkeyManager.h b/Source/Core/Core/HotkeyManager.h
+index 6a1b754..7a5c82c 100644
+--- a/Source/Core/Core/HotkeyManager.h
++++ b/Source/Core/Core/HotkeyManager.h
+@@ -33,6 +33,7 @@ enum Hotkey
+   HK_REQUEST_GOLF_CONTROL,
+ #ifdef USE_RETRO_ACHIEVEMENTS
+   HK_OPEN_ACHIEVEMENTS,
++  HK_SHOW_LEVEL_ACHIEVEMENTS,
+ #endif  // USE_RETRO_ACHIEVEMENTS
+ 
+   HK_VOLUME_DOWN,
 diff --git a/Source/Core/Core/LocationTracker.cpp b/Source/Core/Core/LocationTracker.cpp
 new file mode 100644
-index 0000000..56fbdcf
+index 0000000..5af6021
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.cpp
-@@ -0,0 +1,615 @@
+@@ -0,0 +1,638 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -85,6 +130,9 @@ index 0000000..56fbdcf
 +constexpr float BANNER_SECONDS_PER_ENTRY = 1.5f;
 +constexpr float BANNER_MIN_SECONDS = 6.0f;
 +constexpr float BANNER_MAX_SECONDS = 15.0f;
++// How long the list takes to fade once the hotkey that holds it up is released. The same as
++// the banner's own fade-out in OnScreenUI.
++constexpr float HELD_RELEASE_SECONDS = 1.0f;
 +
 +// A plain read of memory, directly or through a pointer chain, that is not transformed or
 +// combined with anything else. Delta reads count: while the player stays put the previous
@@ -151,6 +199,7 @@ index 0000000..56fbdcf
 +
 +  std::lock_guard lg{m_banner_mutex};
 +  m_banner.reset();
++  m_here.clear();
 +}
 +
 +size_t LocationTracker::AddCandidate(const rc_operand_t& operand)
@@ -625,6 +674,8 @@ index 0000000..56fbdcf
 +void LocationTracker::Settled(const std::vector<u32>& ids)
 +{
 +  std::lock_guard lg{m_banner_mutex};
++  m_here = ids;
++  m_here_serial = ++m_banner_serial;
 +  if (ids.empty())
 +  {
 +    // Somewhere with nothing to show (a menu, a loading screen): coming back should show the
@@ -649,13 +700,30 @@ index 0000000..56fbdcf
 +      std::clamp(BANNER_BASE_SECONDS + BANNER_SECONDS_PER_ENTRY * ids.size(), BANNER_MIN_SECONDS,
 +                 BANNER_MAX_SECONDS);
 +  m_banner = Banner{ids, std::chrono::steady_clock::now(), std::chrono::duration<float>(seconds),
-+                    ++m_banner_serial};
++                    m_here_serial};
++}
++
++void LocationTracker::SetHeld(bool held)
++{
++  m_held.store(held, std::memory_order_relaxed);
 +}
 +
 +std::optional<LocationTracker::Banner> LocationTracker::GetBanner() const
 +{
 +  std::lock_guard lg{m_banner_mutex};
-+  if (m_banner && std::chrono::steady_clock::now() - m_banner->start > m_banner->duration)
++  const auto now = std::chrono::steady_clock::now();
++  if (m_held.load(std::memory_order_relaxed))
++  {
++    // Leave a timed banner behind that is already at its fade-out, so letting go of the key
++    // fades the list rather than cutting it off.
++    const std::chrono::duration<float> fade(HELD_RELEASE_SECONDS);
++    const auto elapsed = std::chrono::duration_cast<std::chrono::steady_clock::duration>(fade);
++    m_banner = Banner{m_here, now - elapsed, 2 * fade, m_here_serial};
++    Banner held = *m_banner;
++    held.held = true;
++    return held;
++  }
++  if (m_banner && (m_banner->ids.empty() || now - m_banner->start > m_banner->duration))
 +    m_banner.reset();
 +  return m_banner;
 +}
@@ -664,10 +732,10 @@ index 0000000..56fbdcf
 +#endif  // USE_RETRO_ACHIEVEMENTS
 diff --git a/Source/Core/Core/LocationTracker.h b/Source/Core/Core/LocationTracker.h
 new file mode 100644
-index 0000000..309017e
+index 0000000..4a1a1b5
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.h
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,144 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -675,6 +743,7 @@ index 0000000..309017e
 +
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +
++#include <atomic>
 +#include <chrono>
 +#include <map>
 +#include <mutex>
@@ -710,6 +779,8 @@ index 0000000..309017e
 +    std::chrono::steady_clock::time_point start;
 +    std::chrono::duration<float> duration;
 +    u64 serial = 0;
++    // Up because the hotkey is down, not because of the timer; ids may then be empty.
++    bool held = false;
 +  };
 +
 +  static LocationTracker& GetInstance();
@@ -723,6 +794,9 @@ index 0000000..309017e
 +
 +  // Thread safe. The banner to draw right now, if one is still on screen.
 +  std::optional<Banner> GetBanner() const;
++  // Thread safe. While held, the list for the current place stays up whatever the timer says,
++  // so it can be checked at any moment rather than only on arrival.
++  void SetHeld(bool held);
 +
 +private:
 +  LocationTracker() = default;
@@ -798,6 +872,10 @@ index 0000000..309017e
 +  mutable std::mutex m_banner_mutex;
 +  mutable std::optional<Banner> m_banner;
 +  u64 m_banner_serial = 0;
++  // What the last settle found here, shown or not, for the hotkey. Guarded by m_banner_mutex.
++  std::vector<u32> m_here;
++  u64 m_here_serial = 0;
++  std::atomic<bool> m_held{false};
 +};
 +}  // namespace RetroAchievements
 +
@@ -822,8 +900,45 @@ index 9959caf..01e0871 100644
      <ClCompile Include="Core\ActionReplay.cpp" />
      <ClCompile Include="Core\ARDecrypt.cpp" />
      <ClCompile Include="Core\Boot\Boot_BS2Emu.cpp" />
+diff --git a/Source/Core/DolphinQt/HotkeyScheduler.cpp b/Source/Core/DolphinQt/HotkeyScheduler.cpp
+index 62f89c1..bcb6b10 100644
+--- a/Source/Core/DolphinQt/HotkeyScheduler.cpp
++++ b/Source/Core/DolphinQt/HotkeyScheduler.cpp
+@@ -26,6 +26,7 @@
+ #include "Core/FreeLookManager.h"
+ #include "Core/HotkeyManager.h"
+ #include "Core/IOS/IOS.h"
++#include "Core/LocationTracker.h"
+ #include "Core/State.h"
+ #include "Core/System.h"
+ #include "Core/WiiUtils.h"
+@@ -156,7 +157,13 @@ void HotkeyScheduler::Run()
+     g_controller_interface.UpdateInput();
+ 
+     if (!HotkeyManagerEmu::IsEnabled())
++    {
++#ifdef USE_RETRO_ACHIEVEMENTS
++      // Nothing below runs, so a key that was down would otherwise stay "held".
++      RetroAchievements::LocationTracker::GetInstance().SetHeld(false);
++#endif  // USE_RETRO_ACHIEVEMENTS
+       continue;
++    }
+ 
+     Core::System& system = Core::System::GetInstance();
+     if (Core::GetState(system) != Core::State::Stopping)
+@@ -190,6 +197,10 @@ void HotkeyScheduler::Run()
+ #ifdef USE_RETRO_ACHIEVEMENTS
+       if (IsHotkey(HK_OPEN_ACHIEVEMENTS))
+         emit OpenAchievements();
++
++      // Held, not toggled: the list is up for exactly as long as the key is down.
++      RetroAchievements::LocationTracker::GetInstance().SetHeld(
++          IsHotkey(HK_SHOW_LEVEL_ACHIEVEMENTS, true));
+ #endif  // USE_RETRO_ACHIEVEMENTS
+ 
+       if (Core::IsUninitialized(system))
 diff --git a/Source/Core/VideoCommon/OnScreenUI.cpp b/Source/Core/VideoCommon/OnScreenUI.cpp
-index ea15c49..1c6cde9 100644
+index ea15c49..0677854 100644
 --- a/Source/Core/VideoCommon/OnScreenUI.cpp
 +++ b/Source/Core/VideoCommon/OnScreenUI.cpp
 @@ -14,6 +14,7 @@
@@ -843,7 +958,7 @@ index ea15c49..1c6cde9 100644
  #include <inttypes.h>
  #include <mutex>
  
-@@ -433,11 +436,119 @@ void OnScreenUI::DrawChallengesAndLeaderboards()
+@@ -433,11 +436,125 @@ void OnScreenUI::DrawChallengesAndLeaderboards()
        for (const auto& value : leaderboard_progress)
          ImGui::TextUnformatted(value.c_str());
      }
@@ -893,14 +1008,18 @@ index ea15c49..1c6cde9 100644
 +      continue;
 +    rows.push_back(info);
 +  }
-+  if (rows.empty())
++  // With the hotkey down the panel always shows, so pressing it somewhere empty says so
++  // instead of looking like the key does nothing.
++  if (rows.empty() && !banner->held)
 +    return;
 +
 +  const float elapsed =
 +      std::chrono::duration<float>(std::chrono::steady_clock::now() - banner->start).count();
-+  const float alpha = std::clamp(std::min(elapsed / FADE_IN_SECONDS,
-+                                          (banner->duration.count() - elapsed) / FADE_OUT_SECONDS),
-+                                 0.0f, 1.0f);
++  const float alpha =
++      banner->held ? 1.0f :
++                     std::clamp(std::min(elapsed / FADE_IN_SECONDS,
++                                         (banner->duration.count() - elapsed) / FADE_OUT_SECONDS),
++                                0.0f, 1.0f);
 +
 +  const float scale = ImGui::GetIO().DisplaySize.y / 1024.0f;
 +  const float icon_size = 40.0f * scale;
@@ -954,6 +1073,8 @@ index ea15c49..1c6cde9 100644
 +    }
 +    if (rows.size() > shown)
 +      ImGui::TextColored(note_color, "+%zu more", rows.size() - shown);
++    if (rows.empty())
++      ImGui::TextColored(note_color, "Nothing more to earn here");
 +  }
 +  ImGui::End();
 +  ImGui::PopStyleVar();

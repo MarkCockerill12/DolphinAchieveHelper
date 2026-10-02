@@ -7,6 +7,9 @@ otherwise only appear once you have already earned them.
 
 ![Achievement list on entering Bonefin Galaxy](https://cdn.jsdelivr.net/gh/MarkCockerill12/DolphinAchieveHelper@main/docs/banner-galaxy.png)
 
+Hold the `'` (apostrophe) key at any point to bring the list back up for as long as you
+keep it pressed.
+
 It also puts the name and unlock condition next to Dolphin's challenge indicators, the
 bare badges Dolphin shows while a timed or no-damage challenge is running.
 
@@ -115,6 +118,9 @@ corner, above the challenge indicators, for 6 to 15 seconds depending on how muc
   the panel is up disappears from it.
 - It appears again when you reach somewhere with something new, and when you come back to a
   level after a menu or loading screen.
+- **Hold `'` (apostrophe) to bring it up at any time.** It stays for as long as the key is
+  down and fades when you let go; somewhere with nothing left it says so. The key is
+  "Show Level Achievements" under *Options > Hotkey Settings > General* if you want another.
 
 ![Achievements at Delfino Airstrip](https://cdn.jsdelivr.net/gh/MarkCockerill12/DolphinAchieveHelper@main/docs/banner-sunshine.png)
 
@@ -133,7 +139,7 @@ shipping a prebuilt exe, is what keeps it working after Dolphin updates.
 | Patch | What it does |
 |---|---|
 | `patches/challenge-details.patch` | Draws the title and description next to each challenge indicator. |
-| `patches/level-banner.patch` | Adds `Core/LocationTracker`, which works out which achievements belong where you are, and draws the list. |
+| `patches/level-banner.patch` | Adds `Core/LocationTracker`, which works out which achievements belong where you are, and draws the list. Adds the hotkey that holds it up. |
 
 ### Working out where you are
 

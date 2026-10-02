@@ -235,6 +235,19 @@ foreach ($ini in Get-DolphinIniPaths $Install) {
     }
 }
 
+# The list can also be held up with a hotkey. Dolphin only applies its built-in hotkey defaults
+# when there is no Hotkeys.ini, and any Dolphin that has been started has one, so the new hotkey
+# would begin unbound. Bind it when it has no binding; one the user chose is left alone.
+$hotkey = 'General/Show Level Achievements'
+foreach ($ini in Get-DolphinIniPaths $Install) {
+    $hotkeys = Join-Path (Split-Path -Parent $ini) 'Hotkeys.ini'
+    if (-not (Test-Path -LiteralPath $hotkeys)) { continue }
+    if ($null -eq (Get-IniValue ([IO.File]::ReadAllText($hotkeys)) 'Hotkeys' $hotkey)) {
+        Set-IniValue $hotkeys 'Hotkeys' $hotkey '`DInput/0/Keyboard Mouse:APOSTROPHE`'
+        Ok "Hold ' (apostrophe) in a game to show the level's achievements (Options > Hotkey Settings to change)"
+    }
+}
+
 Write-Host ''
 Write-Host ('Finished in {0:0} min.' -f $clock.Elapsed.TotalMinutes)
 Write-Host 'DONE: Dolphin is patched. Start it as usual.'
