@@ -131,15 +131,26 @@ corner, above the challenge indicators, for 6 to 15 seconds depending on how muc
 ### Building Dolphin at your version
 
 `Dolphin.exe` embeds its version name and the exact source commit it was built from. The
-patcher reads those, downloads Dolphin's source at that commit, applies two patches, builds
+patcher reads those, downloads Dolphin's source at that commit, applies the patches, builds
 it with Visual Studio's C++ tools and copies in only the files that differ. Your saves,
 settings and the rest of the install are untouched. Building from your own version, not
 shipping a prebuilt exe, is what keeps it working after Dolphin updates.
+
+Dolphin up to 2606a is built from its Visual Studio solution; from 2609 on it is built with
+CMake and Ninja, both of which come with the same C++ build tools. The patcher picks
+whichever the downloaded source uses.
+
+Each Dolphin release also refuses to compile with a C++ compiler older than the one it was
+developed with; 2609 needs an up-to-date Visual Studio 2026 (Build Tools or any edition with
+the C++ workload). The patcher checks this before it builds and, if yours is too old, says
+which version is needed and leaves your install alone. Updating Visual Studio from the
+*Visual Studio Installer* fixes it.
 
 | Patch | What it does |
 |---|---|
 | `patches/challenge-details.patch` | Draws the title and description next to each challenge indicator. |
 | `patches/level-banner.patch` | Adds `Core/LocationTracker`, which works out which achievements belong where you are, and draws the list. Adds the hotkey that holds it up. |
+| `patches/level-banner-msbuild.patch` | Applied only to Dolphin 2606a and older: adds the new files to the Visual Studio projects those versions are built from. |
 
 ### Working out where you are
 
@@ -221,7 +232,7 @@ Also run in Dolphin: *Super Mario Galaxy* (Bonefin Galaxy shows its achievement)
 | `patcher/PatcherGui.ps1` | The window |
 | `patcher/Build-PatchedDolphin.ps1` | Does the work: detect, fetch, patch, build, install |
 | `patcher/PatcherCore.ps1` | Shared helpers (version detection, finding Git and Visual Studio) |
-| `patcher/patches/` | The two Dolphin patches |
+| `patcher/patches/` | The Dolphin patches |
 
 ## License
 

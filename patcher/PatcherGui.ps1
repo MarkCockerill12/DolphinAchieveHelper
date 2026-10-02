@@ -276,7 +276,8 @@ $installTools.Add_Click({
     $cmds = @()
     if (-not $tools.Git) { $cmds += 'winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements' }
     if (-not $tools.VS) {
-        $cmds += ('winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements ' +
+        # The 2026 Build Tools: Dolphin from 2609 on will not compile with an older compiler.
+        $cmds += ('winget install --id Microsoft.VisualStudio.BuildTools -e --accept-source-agreements ' +
             '--accept-package-agreements --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"')
     }
     $answer = [Windows.Forms.MessageBox]::Show($form, ("This installs the missing tools with winget (Windows asks for " +

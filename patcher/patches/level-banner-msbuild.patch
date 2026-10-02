@@ -1,0 +1,32 @@
+diff --git a/Source/Core/DolphinLib.props b/Source/Core/DolphinLib.props
+index 9959caf..01e0871 100644
+--- a/Source/Core/DolphinLib.props
++++ b/Source/Core/DolphinLib.props
+@@ -187,6 +187,7 @@
+     <ClInclude Include="Common\WorkQueueThread.h" />
+     <ClInclude Include="Core\AchievementApprovedHash.h" />
+     <ClInclude Include="Core\AchievementManager.h" />
++    <ClInclude Include="Core\LocationTracker.h" />
+     <ClInclude Include="Core\ActionReplay.h" />
+     <ClInclude Include="Core\ARDecrypt.h" />
+     <ClInclude Include="Core\Boot\Boot.h" />
+@@ -899,6 +900,7 @@
+     <ClCompile Include="Common\WindowsRegistry.cpp" />
+     <ClCompile Include="Common\Version.cpp" />
+     <ClCompile Include="Core\AchievementManager.cpp" />
++    <ClCompile Include="Core\LocationTracker.cpp" />
+     <ClCompile Include="Core\ActionReplay.cpp" />
+     <ClCompile Include="Core\ARDecrypt.cpp" />
+     <ClCompile Include="Core\Boot\Boot_BS2Emu.cpp" />
+diff --git a/Source/VSProps/Base.Dolphin.props b/Source/VSProps/Base.Dolphin.props
+index 93d58df..fb97ed6 100644
+--- a/Source/VSProps/Base.Dolphin.props
++++ b/Source/VSProps/Base.Dolphin.props
+@@ -9,6 +9,7 @@
+     <ClCompile>
+       <!--Dolphin includes are relative to Source\Core-->
+       <AdditionalIncludeDirectories>$(CoreDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
++      <AdditionalIncludeDirectories>$(ExternalsDir)rcheevos\rcheevos\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+ 
+       <!--For now, header-only libs don't have their own vcxproj/exports, so just supply their include paths to all Dolphin code-->
+       <AdditionalIncludeDirectories>$(ExternalsDir)FFmpeg-bin\$(Platform)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

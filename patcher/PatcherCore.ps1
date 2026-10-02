@@ -75,9 +75,45 @@ function Find-MSBuild([string]$Toolset) {
             ForEach-Object { Get-ChildItem -Path $_ -Directory -Filter $pattern -ErrorAction SilentlyContinue } |
             Select-Object -First 1
         if ($found) {
-            return [pscustomobject]@{ MSBuild = $msbuild; Name = $vs.displayName; Toolset = $found.Name }
+            return [pscustomobject]@{ MSBuild = $msbuild; Name = $vs.displayName; Toolset = $found.Name; Root = $root }
         }
     }
+    return $null
+}
+
+# The Visual Studio install with the newest Visual C++ compiler, for building with CMake.
+# Version is what the compiler reports as _MSC_FULL_VER, e.g. 19.51.36252, read from cl.exe's
+# file version. (Its tools folder, 14.51.36231, carries a different build number.)
+function Find-VCCompiler {
+    $best = $null
+    foreach ($vs in Get-VsInstalls) {
+        $root = $vs.installationPath
+        if (-not (Test-Path (Join-Path $root 'VC\Auxiliary\Build\vcvars64.bat'))) { continue }
+        foreach ($d in Get-ChildItem -Path (Join-Path $root 'VC\Tools\MSVC') -Directory -ErrorAction SilentlyContinue) {
+            $cl = Join-Path $d.FullName 'bin\Hostx64\x64\cl.exe'
+            if (-not (Test-Path $cl)) { continue }
+            $v = $null
+            $file = (Get-Item $cl).VersionInfo
+            if (-not $file.FileMajorPart) { continue }
+            $v = New-Object Version 19, $file.FileMinorPart, $file.FileBuildPart
+            if (-not $best -or $v -gt $best.Version) {
+                $best = [pscustomobject]@{ Root = $root; Name = $vs.displayName; Version = $v }
+            }
+        }
+    }
+    return $best
+}
+
+# A tool that ships inside Visual Studio (CMake, Ninja), from the preferred install first, then
+# any other install, then PATH.
+function Find-VsTool([string]$PreferredRoot, [string]$RelativePath, [string]$ExeName) {
+    $roots = @($PreferredRoot) + @(Get-VsInstalls | ForEach-Object { $_.installationPath })
+    foreach ($root in $roots | Where-Object { $_ }) {
+        $p = Join-Path $root $RelativePath
+        if (Test-Path $p) { return $p }
+    }
+    $cmd = Get-Command $ExeName -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
     return $null
 }
 

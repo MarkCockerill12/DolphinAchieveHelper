@@ -63,7 +63,11 @@ function Invoke-Native([string]$What, [scriptblock]$Command) {
 }
 
 $patches = @('challenge-details.patch', 'level-banner.patch') | ForEach-Object { Join-Path $here "patches\$_" }
-foreach ($p in $patches) { if (-not (Test-Path $p)) { throw "Missing patch file: $p" } }
+# Only for Dolphin versions that are still built from Visual Studio project files (up to 2606a):
+# it adds the new source files to those projects. Later versions are built with CMake, which
+# level-banner.patch itself covers.
+$msbuildPatch = Join-Path $here 'patches\level-banner-msbuild.patch'
+foreach ($p in $patches + $msbuildPatch) { if (-not (Test-Path $p)) { throw "Missing patch file: $p" } }
 
 # --- the install ------------------------------------------------------------
 Step 'Checking the Dolphin install'
@@ -143,6 +147,19 @@ Say 'Updating bundled libraries...'
 Invoke-Native 'git submodule update' { & $git @gitArgs submodule update -q --init --recursive --depth 1 --jobs 8 }
 Ok "Source ready at $((& $git @gitArgs rev-parse --short HEAD).Trim())"
 
+# Dolphin names itself with `git describe`, which needs a tag, and only the one commit was
+# downloaded. Without this the build would call itself by its commit id and the next run could
+# not tell which version is installed.
+if (-not $Ref) {
+    Invoke-Native 'git tag' {
+        & $git @gitArgs -c user.name=DolphinAchiever -c user.email=patcher@localhost tag -a -f -m $version.Name $version.Name HEAD
+    }
+}
+
+# Dolphin up to 2606a is built from a Visual Studio solution; later versions with CMake.
+$usesMSBuild = Test-Path (Join-Path $src 'Source\dolphin-emu.sln')
+if ($usesMSBuild) { $patches += $msbuildPatch }
+
 # --- patches ----------------------------------------------------------------
 Step 'Applying patches'
 foreach ($p in $patches) {
@@ -158,21 +175,77 @@ foreach ($p in $patches) {
 
 # --- build ------------------------------------------------------------------
 Step 'Building (about 10 minutes on a fast laptop, 20-40 on a slower one; ~1 minute if nothing changed)'
-$toolset = 'v143'
-$propsFile = Join-Path $src 'Source\VSProps\Configuration.Base.props'
-if (Test-Path $propsFile) {
-    $m = [regex]::Match((Get-Content -Raw $propsFile), '<PlatformToolset>(v\d+)</PlatformToolset>')
-    if ($m.Success) { $toolset = $m.Groups[1].Value }
+if ($usesMSBuild) {
+    $toolset = 'v143'
+    $propsFile = Join-Path $src 'Source\VSProps\Configuration.Base.props'
+    if (Test-Path $propsFile) {
+        $m = [regex]::Match((Get-Content -Raw $propsFile), '<PlatformToolset>(v\d+)</PlatformToolset>')
+        if ($m.Success) { $toolset = $m.Groups[1].Value }
+    }
+    $vs = Find-MSBuild $toolset
+    if (-not $vs) {
+        throw "Dolphin $($version.Name) needs Visual C++ toolset $toolset, which none of your Visual Studio installs has. Install the Visual Studio Build Tools that provide it ('Desktop development with C++')."
+    }
+    Ok "$($vs.Name) ($toolset)"
+    Invoke-Native 'The build' {
+        & $vs.MSBuild (Join-Path $src 'Source\dolphin-emu.sln') -p:Configuration=Release -p:Platform=x64 -m -v:minimal -nologo
+    }
+    $bin = Join-Path $src 'Binary\x64'
+} else {
+    # CMake + Ninja with the Visual C++ compiler. Dolphin refuses to compile with one older than
+    # it was developed against (an #error in its precompiled header, e.g. "_MSC_FULL_VER <
+    # 195136252" = 19.51), so check that here rather than fail ten minutes into the build.
+    $need = [Version]'19.0.0'
+    $pch = Join-Path $src 'Source\PCH\pch.h'
+    if (Test-Path $pch) {
+        $m = [regex]::Match((Get-Content -Raw $pch), '_MSC_FULL_VER\s*<\s*(\d{2})(\d{2})(\d{5})')
+        if ($m.Success) { $need = New-Object Version ([int]$m.Groups[1].Value), ([int]$m.Groups[2].Value), ([int]$m.Groups[3].Value) }
+    }
+    $vs = Find-VCCompiler
+    $have = if ($vs) { $vs.Version } else { $null }
+    if (-not $vs -or $have -lt $need) {
+        $mine = if ($vs) { "Yours is $have ($($vs.Name))." } else { 'You have none installed.' }
+        throw "Dolphin $($version.Name) needs the Visual C++ compiler $need or newer. $mine Install or update 'Visual Studio Build Tools 2026' with the 'Desktop development with C++' workload (https://visualstudio.microsoft.com/visual-cpp-build-tools/), then run again."
+    }
+    $vcvars = Join-Path $vs.Root 'VC\Auxiliary\Build\vcvars64.bat'
+
+    # CMake and Ninja come with the C++ workload ("C++ CMake tools for Windows"); otherwise
+    # take them from PATH.
+    $vsCMake = 'Common7\IDE\CommonExtensions\Microsoft\CMake'
+    $cmake = Find-VsTool $vs.Root "$vsCMake\CMake\bin\cmake.exe" 'cmake.exe'
+    $ninja = Find-VsTool $vs.Root "$vsCMake\Ninja\ninja.exe" 'ninja.exe'
+    if (-not $cmake -or -not $ninja) {
+        throw "Dolphin $($version.Name) is built with CMake and Ninja, which were not found. In the Visual Studio Installer, modify $($vs.Name) and tick 'C++ CMake tools for Windows'."
+    }
+    Ok "$($vs.Name) (Visual C++ $have), CMake + Ninja"
+
+    # CMake remembers the compiler it was first configured with. After a Visual Studio update
+    # or a newer install that would keep building with the old one, so start afresh then.
+    $buildDir = Join-Path $src 'build\release\x64'
+    $cache = Join-Path $buildDir 'CMakeCache.txt'
+    if (Test-Path $cache) {
+        $m = [regex]::Match((Get-Content -Raw $cache), '(?m)^CMAKE_CXX_COMPILER:[A-Z]+=(.*)$')
+        $cached = if ($m.Success) { [IO.Path]::GetDirectoryName($m.Groups[1].Value.Trim().Replace('/', '\')) } else { '' }
+        $current = Get-ChildItem -Path (Join-Path $vs.Root 'VC\Tools\MSVC') -Directory |
+            ForEach-Object { Join-Path $_.FullName 'bin\Hostx64\x64' }
+        if ($current -notcontains $cached) {
+            Say 'The compiler changed since the last build; rebuilding from scratch.'
+            Remove-Item -LiteralPath $buildDir -Recurse -Force
+        }
+    }
+
+    # The compiler environment comes from a batch file, so the build runs from one too.
+    $buildCmd = Join-Path $WorkDir 'build-dolphin.cmd'
+    [IO.File]::WriteAllLines($buildCmd, @(
+        '@echo off',
+        "call `"$vcvars`" >nul || exit /b 1",
+        "cd /d `"$src`" || exit /b 1",
+        "`"$cmake`" --preset ninja-release-x64 -DCMAKE_MAKE_PROGRAM=`"$($ninja.Replace('\', '/'))`" -DENABLE_TESTS=OFF || exit /b 1",
+        "`"$cmake`" --build --preset ninja-build-release-x64 --target dolphin-emu || exit /b 1"
+    ), [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage))
+    Invoke-Native 'The build' { & $env:ComSpec /d /c $buildCmd }
+    $bin = Join-Path $buildDir 'Binaries'
 }
-$vs = Find-MSBuild $toolset
-if (-not $vs) {
-    throw "Dolphin $($version.Name) needs Visual C++ toolset $toolset, which none of your Visual Studio installs has. Install the Visual Studio Build Tools that provide it ('Desktop development with C++')."
-}
-Ok "$($vs.Name) ($toolset)"
-Invoke-Native 'The build' {
-    & $vs.MSBuild (Join-Path $src 'Source\dolphin-emu.sln') -p:Configuration=Release -p:Platform=x64 -m -v:minimal -nologo
-}
-$bin = Join-Path $src 'Binary\x64'
 if (-not (Test-Path (Join-Path $bin 'Dolphin.exe'))) { throw "The build finished but $bin\Dolphin.exe is missing." }
 Ok 'Built'
 
