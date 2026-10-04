@@ -99,10 +99,10 @@ index 6a1b754..7a5c82c 100644
    HK_VOLUME_DOWN,
 diff --git a/Source/Core/Core/LocationTracker.cpp b/Source/Core/Core/LocationTracker.cpp
 new file mode 100644
-index 0000000..f3e50f0
+index 0000000..208eb9e
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.cpp
-@@ -0,0 +1,755 @@
+@@ -0,0 +1,863 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -111,6 +111,7 @@ index 0000000..f3e50f0
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +
 +#include <algorithm>
++#include <cctype>
 +#include <string>
 +
 +#include <fmt/format.h>
@@ -135,6 +136,32 @@ index 0000000..f3e50f0
 +// A read off the main pointer chain has to be tested by this many achievements before it is
 +// taken as part of where the player is.
 +constexpr size_t MIN_REFINE_ACHIEVEMENTS = 4;
++
++// A Rich Presence label is taken for a place name when it is this long and more than one word
++// ("in Yoshi Star Galaxy", not "Spring"), and the line is re-read this often.
++constexpr size_t MIN_PLACE_NAME_LENGTH = 10;
++constexpr u32 PRESENCE_FRAMES = 30;
++
++std::string ToLower(std::string text)
++{
++  std::transform(text.begin(), text.end(), text.begin(),
++                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++  return text;
++}
++
++void CollectLabels(const rc_richpresence_lookup_item_t* item, std::set<std::string>* out)
++{
++  if (item == nullptr)
++    return;
++  if (item->label != nullptr)
++  {
++    const std::string label = ToLower(item->label);
++    if (label.size() >= MIN_PLACE_NAME_LENGTH && label.find(' ') != std::string::npos)
++      out->insert(label);
++  }
++  CollectLabels(item->left, out);
++  CollectLabels(item->right, out);
++}
 +
 +// "Reset unless name window A or window B ..." is only read as "the name is A..B" when the
 +// windows are this close together, i.e. plausibly parts of one field.
@@ -205,6 +232,10 @@ index 0000000..f3e50f0
 +  m_candidate_index.clear();
 +  m_keys.clear();
 +  m_located.clear();
++  m_named.clear();
++  m_infos.clear();
++  m_presence.clear();
++  m_presence_age = 0;
 +  m_reading.clear();
 +  m_matches.clear();
 +  m_stable_frames = 0;
@@ -642,6 +673,7 @@ index 0000000..f3e50f0
 +    if (has_location)
 +      m_located.push_back(std::move(located));
 +  }
++  BuildNamed(client, infos);
 +
 +  INFO_LOG_FMT(ACHIEVEMENTS, "Location tracker: {} keys, {} of {} achievements have a location.",
 +               m_keys.size(), m_located.size(), infos.size());
@@ -650,6 +682,72 @@ index 0000000..f3e50f0
 +    DEBUG_LOG_FMT(ACHIEVEMENTS, "  key +{:#x}{}: {} values, {} achievements", key.offset,
 +                  key.strong ? " (strong)" : "", key.values.size(), key.achievements.size());
 +  }
++}
++
++// Achievements that no strong read places fall back on the place names in their description.
++void LocationTracker::BuildNamed(rc_client_t* client,
++                                 const std::vector<const rc_client_achievement_t*>& infos)
++{
++  for (const auto* info : infos)
++    m_infos[info->id] = info;
++
++  const rc_runtime_richpresence_t* presence = client->game->runtime.richpresence;
++  if (presence == nullptr || presence->richpresence == nullptr)
++    return;
++  std::set<std::string> labels;
++  for (const rc_richpresence_lookup_t* lookup = presence->richpresence->first_lookup;
++       lookup != nullptr; lookup = lookup->next)
++  {
++    CollectLabels(lookup->root, &labels);
++  }
++  if (labels.empty())
++    return;
++
++  std::set<u32> placed;
++  for (const Located& located : m_located)
++  {
++    for (const Group& group : located.groups)
++    {
++      if (group && std::any_of(group->begin(), group->end(),
++                               [this](const Constraint& c) { return IsStrong(c); }))
++      {
++        placed.insert(located.info->id);
++      }
++    }
++  }
++
++  for (const auto* info : infos)
++  {
++    if (placed.contains(info->id) || info->description == nullptr)
++      continue;
++    const std::string description = ToLower(info->description);
++    Named named{info, {}};
++    for (const std::string& label : labels)
++    {
++      if (description.find(label) != std::string::npos)
++        named.places.push_back(label);
++    }
++    if (!named.places.empty())
++      m_named.push_back(std::move(named));
++  }
++  INFO_LOG_FMT(ACHIEVEMENTS, "Location tracker: {} more achievements placed by name.",
++               m_named.size());
++}
++
++// True when the Rich Presence line changed.
++bool LocationTracker::UpdatePresence(rc_client_t* client)
++{
++  if (m_named.empty() || ++m_presence_age < PRESENCE_FRAMES)
++    return false;
++  m_presence_age = 0;
++
++  char buffer[512] = {};
++  rc_client_get_rich_presence_message(client, buffer, sizeof(buffer));
++  std::string presence = ToLower(buffer);
++  if (presence == m_presence)
++    return false;
++  m_presence = std::move(presence);
++  return true;
 +}
 +
 +bool LocationTracker::IsStrong(const Constraint& constraint) const
@@ -713,6 +811,16 @@ index 0000000..f3e50f0
 +    if (located.info->state == RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE && Matches(located, current))
 +      found.push_back(located.info);
 +  }
++  for (const Named& named : m_named)
++  {
++    if (named.info->state == RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE &&
++        std::any_of(named.places.begin(), named.places.end(), [this](const std::string& place) {
++          return m_presence.find(place) != std::string::npos;
++        }))
++    {
++      found.push_back(named.info);
++    }
++  }
 +  std::stable_sort(found.begin(), found.end(), [](const auto* a, const auto* b) {
 +    const bool a_missable = a->type == RC_CLIENT_ACHIEVEMENT_TYPE_MISSABLE;
 +    const bool b_missable = b->type == RC_CLIENT_ACHIEVEMENT_TYPE_MISSABLE;
@@ -757,7 +865,8 @@ index 0000000..f3e50f0
 +
 +  // Settle on what matches rather than on the raw reading, so a value that keeps changing
 +  // but decides nothing (a flag a few achievements test) cannot hold the banner back.
-+  if (reading != m_reading)
++  const bool presence_changed = UpdatePresence(client);
++  if (reading != m_reading || presence_changed)
 +  {
 +    m_reading = std::move(reading);
 +    std::vector<u32> matches = FindMatches(m_reading);
@@ -784,9 +893,8 @@ index 0000000..f3e50f0
 +{
 +  std::lock_guard lg{m_banner_mutex};
 +  const auto unlocked = [this](u32 id) {
-+    const auto it = std::find_if(m_located.begin(), m_located.end(),
-+                                 [id](const Located& located) { return located.info->id == id; });
-+    return it != m_located.end() && it->info->state != RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE;
++    const auto it = m_infos.find(id);
++    return it != m_infos.end() && it->second->state != RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE;
 +  };
 +  if (std::erase_if(m_here, unlocked) == 0)
 +    return;
@@ -860,10 +968,10 @@ index 0000000..f3e50f0
 +#endif  // USE_RETRO_ACHIEVEMENTS
 diff --git a/Source/Core/Core/LocationTracker.h b/Source/Core/Core/LocationTracker.h
 new file mode 100644
-index 0000000..6c6cfc3
+index 0000000..0208d5e
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.h
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,170 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -877,6 +985,7 @@ index 0000000..6c6cfc3
 +#include <mutex>
 +#include <optional>
 +#include <set>
++#include <string>
 +#include <utility>
 +#include <vector>
 +
@@ -992,6 +1101,17 @@ index 0000000..6c6cfc3
 +  std::vector<u32> FindMatches(const std::vector<u32>& current) const;
 +  void Settled(const std::vector<u32>& ids);
 +  void DropUnlocked();
++  void BuildNamed(rc_client_t* client, const std::vector<const rc_client_achievement_t*>& infos);
++  bool UpdatePresence(rc_client_t* client);
++
++  // An achievement no memory read places, whose description names somewhere the game's Rich
++  // Presence can report ("every star in Yoshi Star Galaxy").
++  struct Named
++  {
++    const rc_client_achievement_t* info;
++    // Lower case.
++    std::vector<std::string> places;
++  };
 +
 +  // Guarded by the AchievementManager lock.
 +  const void* m_game = nullptr;
@@ -999,6 +1119,11 @@ index 0000000..6c6cfc3
 +  std::map<std::pair<const void*, u8>, size_t> m_candidate_index;
 +  std::vector<Key> m_keys;
 +  std::vector<Located> m_located;
++  std::vector<Named> m_named;
++  std::map<u32, const rc_client_achievement_t*> m_infos;
++  // The current Rich Presence line, lower case, and the frames since it was last read.
++  std::string m_presence;
++  u32 m_presence_age = 0;
 +  std::vector<u32> m_reading;
 +  std::vector<u32> m_matches;
 +  u32 m_stable_frames = 0;
