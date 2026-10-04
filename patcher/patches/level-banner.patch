@@ -99,10 +99,10 @@ index 6a1b754..7a5c82c 100644
    HK_VOLUME_DOWN,
 diff --git a/Source/Core/Core/LocationTracker.cpp b/Source/Core/Core/LocationTracker.cpp
 new file mode 100644
-index 0000000..9d53178
+index 0000000..f3e50f0
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.cpp
-@@ -0,0 +1,715 @@
+@@ -0,0 +1,755 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -131,6 +131,10 @@ index 0000000..9d53178
 +// settings is a state flag or a mission number; an achievement placed by that alone would show
 +// in every level (the second mission of every galaxy, say), so it needs a stronger one too.
 +constexpr size_t MIN_STRONG_VALUES = 5;
++
++// A read off the main pointer chain has to be tested by this many achievements before it is
++// taken as part of where the player is.
++constexpr size_t MIN_REFINE_ACHIEVEMENTS = 4;
 +
 +// "Reset unless name window A or window B ..." is only read as "the name is A..B" when the
 +// windows are this close together, i.e. plausibly parts of one field.
@@ -292,6 +296,7 @@ index 0000000..9d53178
 +    }
 +    if (stateful)
 +      continue;
++    const size_t first = out.size();
 +
 +    // A hit target on a link makes the chain stateful; the final condition may carry one
 +    // ("15 times while in stage X" still needs stage X).
@@ -375,6 +380,14 @@ index 0000000..9d53178
 +                                [](const Alternative& a) { return a.values.size() == 1; });
 +        out.push_back(std::move(c));
 +      }
++    }
++
++    if (num_links == 0 && cond->required_hits == 0 &&
++        (cond->type == RC_CONDITION_STANDARD || cond->type == RC_CONDITION_RESET_IF) &&
++        cond->operand1.type != RC_OPERAND_DELTA && cond->operand1.type != RC_OPERAND_PRIOR)
++    {
++      for (size_t i = first; i < out.size(); ++i)
++        out[i].plain = true;
 +    }
 +  }
 +}
@@ -515,6 +528,7 @@ index 0000000..9d53178
 +            Key& key = m_candidates[alt.key];
 +            key.values.insert(alt.values.begin(), alt.values.end());
 +            key.achievements.insert(achievement.public_.id);
++            key.plain &= constraint.plain;
 +          }
 +        }
 +      }
@@ -581,6 +595,32 @@ index 0000000..9d53178
 +  }
 +  for (const size_t p : coarse)
 +    m_keys[p].strong = false;
++
++  // A read on another pointer chain still narrows the place down (the mission number, the
++  // character played) when several achievements test it as a plain state and nearly all of
++  // them name a place too. It has to hold, but never places an achievement by itself.
++  std::set<u32> placed;
++  for (const Key& key : m_keys)
++  {
++    if (key.strong)
++      placed.insert(key.achievements.begin(), key.achievements.end());
++  }
++  for (size_t i = 0; i < m_candidates.size(); ++i)
++  {
++    const Key& candidate = m_candidates[i];
++    if (candidate.chain == best || !candidate.plain || candidate.values.size() < 2 ||
++        candidate.achievements.size() < MIN_REFINE_ACHIEVEMENTS)
++    {
++      continue;
++    }
++    const size_t shared =
++        std::count_if(candidate.achievements.begin(), candidate.achievements.end(),
++                      [&](u32 id) { return placed.contains(id); });
++    if (shared * 10 < candidate.achievements.size() * 9)
++      continue;
++    remap[i] = static_cast<int>(m_keys.size());
++    m_keys.push_back(candidate);
++  }
 +
 +  if (!any_strong)
 +  {
@@ -820,10 +860,10 @@ index 0000000..9d53178
 +#endif  // USE_RETRO_ACHIEVEMENTS
 diff --git a/Source/Core/Core/LocationTracker.h b/Source/Core/Core/LocationTracker.h
 new file mode 100644
-index 0000000..d24e7e9
+index 0000000..6c6cfc3
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.h
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,153 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -903,6 +943,9 @@ index 0000000..d24e7e9
 +    std::set<u32> achievements;
 +    // Takes enough distinct values to identify a place by itself.
 +    bool strong = false;
++    // Only ever tested as a lone, live, unconditional comparison: a state such as the mission
++    // number, not one step of an event.
++    bool plain = true;
 +
 +    double Score() const;
 +  };
@@ -925,6 +968,8 @@ index 0000000..d24e7e9
 +    // "key < below": its single alternative gets the key's known values under the bound once
 +    // the keys are chosen.
 +    std::optional<u32> below;
++    // From a single live condition with no links, hit target or trigger flag.
++    bool plain = false;
 +  };
 +
 +  // A condition group's constraints; nullopt when they contradict so the group can never hold.
