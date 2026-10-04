@@ -1,5 +1,5 @@
 diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
-index 1eaa4d0..387367a 100644
+index 61a90f0..aba9fcb 100644
 --- a/Source/Core/Core/AchievementManager.cpp
 +++ b/Source/Core/Core/AchievementManager.cpp
 @@ -32,6 +32,7 @@
@@ -29,11 +29,11 @@ index 1eaa4d0..387367a 100644
        rc_client_unload_game(m_client);
      INFO_LOG_FMT(ACHIEVEMENTS, "Game closed.");
 diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
-index e411239..2d21f03 100644
+index 56c8dba..99a97c7 100644
 --- a/Source/Core/Core/CMakeLists.txt
 +++ b/Source/Core/Core/CMakeLists.txt
-@@ -2,6 +2,8 @@ add_library(core
-   AchievementApprovedHash.h
+@@ -1,6 +1,8 @@
+ add_library(core
    AchievementManager.cpp
    AchievementManager.h
 +  LocationTracker.cpp
@@ -41,7 +41,7 @@ index e411239..2d21f03 100644
    ActionReplay.cpp
    ActionReplay.h
    ARDecrypt.cpp
-@@ -841,6 +843,10 @@ if(USE_RETRO_ACHIEVEMENTS)
+@@ -853,6 +855,10 @@ if(USE_RETRO_ACHIEVEMENTS)
    target_link_libraries(core PUBLIC rcheevos)
    target_compile_definitions(core PUBLIC -DUSE_RETRO_ACHIEVEMENTS)
    target_compile_definitions(core PUBLIC -DRC_CLIENT_SUPPORTS_HASH)
@@ -99,10 +99,10 @@ index 6a1b754..7a5c82c 100644
    HK_VOLUME_DOWN,
 diff --git a/Source/Core/Core/LocationTracker.cpp b/Source/Core/Core/LocationTracker.cpp
 new file mode 100644
-index 0000000..5af6021
+index 0000000..9ca3753
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.cpp
-@@ -0,0 +1,638 @@
+@@ -0,0 +1,693 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -336,7 +336,19 @@ index 0000000..5af6021
 +        for (const rc_condition_t* term : terms)
 +        {
 +          if (usable(term, RC_OPERATOR_EQ))
++          {
 +            out.push_back(single(term));
++          }
++          else if (usable(term, RC_OPERATOR_LT) || usable(term, RC_OPERATOR_LE))
++          {
++            // "galaxy <= 1": which values that leaves is only known once every value is.
++            Constraint c;
++            c.alts.push_back({AddCandidate(term->operand1), {}});
++            c.delta = term->operand1.type == RC_OPERAND_DELTA;
++            const u32 bound = term->operand2.value.num;
++            c.below = term->oper == RC_OPERATOR_LE && bound != UINT32_MAX ? bound + 1 : bound;
++            out.push_back(std::move(c));
++          }
 +        }
 +      }
 +      else if (all_or && all_usable(RC_OPERATOR_EQ))
@@ -402,6 +414,21 @@ index 0000000..5af6021
 +    // constraint says nothing about location.
 +    if (!all_known)
 +      continue;
++
++    if (mapped.below)
++    {
++      // A bound on a state flag or a counter says nothing about the place.
++      Alternative& alt = mapped.alts.front();
++      if (!m_keys[alt.key].strong)
++        continue;
++      for (const u32 value : m_keys[alt.key].values)
++      {
++        if (value < *mapped.below)
++          alt.values.insert(value);
++      }
++      if (alt.values.empty())
++        continue;
++    }
 +
 +    bool split = mapped.windows && IsStrong(mapped);
 +    if (split)
@@ -527,6 +554,34 @@ index 0000000..5af6021
 +    remap[i] = static_cast<int>(m_keys.size());
 +    m_keys.push_back(std::move(key));
 +  }
++
++  // A key that a finer key nearly always comes with (the world, next to the galaxy within that
++  // world) names a region, not a place: by itself it would list the whole region's
++  // achievements in every level. It still has to hold, but it no longer places anything.
++  std::vector<size_t> coarse;
++  for (size_t p = 0; p < m_keys.size(); ++p)
++  {
++    for (size_t c = 0; c < m_keys.size(); ++c)
++    {
++      if (c == p || !m_keys[p].strong || !m_keys[c].strong ||
++          m_keys[c].values.size() <= m_keys[p].values.size())
++      {
++        continue;
++      }
++      const auto& finer = m_keys[c].achievements;
++      const size_t shared = std::count_if(finer.begin(), finer.end(), [&](u32 id) {
++        return m_keys[p].achievements.contains(id);
++      });
++      if (shared * 10 >= finer.size() * 9)
++      {
++        coarse.push_back(p);
++        break;
++      }
++    }
++  }
++  for (const size_t p : coarse)
++    m_keys[p].strong = false;
++
 +  if (!any_strong)
 +  {
 +    INFO_LOG_FMT(ACHIEVEMENTS, "Location tracker: no read in this set identifies a place; off.");
@@ -743,10 +798,10 @@ index 0000000..5af6021
 +#endif  // USE_RETRO_ACHIEVEMENTS
 diff --git a/Source/Core/Core/LocationTracker.h b/Source/Core/Core/LocationTracker.h
 new file mode 100644
-index 0000000..4a1a1b5
+index 0000000..d024c3b
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.h
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,147 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -845,6 +900,9 @@ index 0000000..4a1a1b5
 +    // Came from "reset unless a==x or b==y or ..." with one value per key. Set authors write
 +    // "reset unless the level name is X" this way, splitting the name into 4-byte windows.
 +    bool windows = false;
++    // "key < below": its single alternative gets the key's known values under the bound once
++    // the keys are chosen.
++    std::optional<u32> below;
 +  };
 +
 +  // A condition group's constraints; nullopt when they contradict so the group can never hold.
@@ -892,7 +950,7 @@ index 0000000..4a1a1b5
 +
 +#endif  // USE_RETRO_ACHIEVEMENTS
 diff --git a/Source/Core/DolphinQt/HotkeyScheduler.cpp b/Source/Core/DolphinQt/HotkeyScheduler.cpp
-index 62f89c1..bcb6b10 100644
+index 478454e..1b6991f 100644
 --- a/Source/Core/DolphinQt/HotkeyScheduler.cpp
 +++ b/Source/Core/DolphinQt/HotkeyScheduler.cpp
 @@ -26,6 +26,7 @@
