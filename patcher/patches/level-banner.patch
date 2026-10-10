@@ -99,10 +99,10 @@ index 6a1b754..7a5c82c 100644
    HK_VOLUME_DOWN,
 diff --git a/Source/Core/Core/LocationTracker.cpp b/Source/Core/Core/LocationTracker.cpp
 new file mode 100644
-index 0000000..208eb9e
+index 0000000..fe8cd7a
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.cpp
-@@ -0,0 +1,863 @@
+@@ -0,0 +1,954 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -167,6 +167,10 @@ index 0000000..208eb9e
 +// windows are this close together, i.e. plausibly parts of one field.
 +constexpr u32 MAX_WINDOW_SPAN = 16;
 +
++// A comparison against a constant under this is taken to be over a small index (a stage
++// number), so every value up to the constant is tried and not only the ones achievements name.
++constexpr u32 MAX_ENUMERATED_VALUE = 256;
++
 +// On-screen time grows with the number of entries so there is time to read them.
 +constexpr float BANNER_BASE_SECONDS = 4.0f;
 +constexpr float BANNER_SECONDS_PER_ENTRY = 1.5f;
@@ -210,6 +214,42 @@ index 0000000..208eb9e
 +bool IsNegation(u8 type)
 +{
 +  return type == RC_CONDITION_RESET_IF || type == RC_CONDITION_PAUSE_IF;
++}
++
++bool Compare(u8 oper, u32 lhs, u32 rhs)
++{
++  switch (oper)
++  {
++  case RC_OPERATOR_EQ:
++    return lhs == rhs;
++  case RC_OPERATOR_NE:
++    return lhs != rhs;
++  case RC_OPERATOR_LT:
++    return lhs < rhs;
++  case RC_OPERATOR_LE:
++    return lhs <= rhs;
++  case RC_OPERATOR_GT:
++    return lhs > rhs;
++  case RC_OPERATOR_GE:
++    return lhs >= rhs;
++  default:
++    return false;
++  }
++}
++
++// Tests are joined left to right, as rcheevos evaluates AndNext/OrNext.
++template <typename Tests>
++bool Passes(const Tests& tests, u32 value)
++{
++  bool result = true;
++  bool or_link = false;
++  for (const auto& test : tests)
++  {
++    const bool holds = Compare(test.oper, value, test.value);
++    result = or_link ? (result || holds) : (result && holds);
++    or_link = test.or_next;
++  }
++  return result;
 +}
 +}  // namespace
 +
@@ -359,6 +399,11 @@ index 0000000..208eb9e
 +      }
 +      return c;
 +    };
++    const auto comparable = [&usable](const rc_condition_t* term) {
++      return usable(term, RC_OPERATOR_EQ) || usable(term, RC_OPERATOR_NE) ||
++             usable(term, RC_OPERATOR_LT) || usable(term, RC_OPERATOR_LE) ||
++             usable(term, RC_OPERATOR_GT) || usable(term, RC_OPERATOR_GE);
++    };
 +    const auto all_usable = [&terms, &usable](u8 oper) {
 +      return std::all_of(terms.begin(), terms.end(),
 +                         [&](const rc_condition_t* t) { return usable(t, oper); });
@@ -369,20 +414,38 @@ index 0000000..208eb9e
 +      if (all_and)
 +      {
 +        // Every term must hold, so each equality is a constraint by itself.
++        std::vector<Constraint> bounds;
 +        for (const rc_condition_t* term : terms)
 +        {
 +          if (usable(term, RC_OPERATOR_EQ))
 +          {
 +            out.push_back(single(term));
 +          }
-+          else if (usable(term, RC_OPERATOR_LT) || usable(term, RC_OPERATOR_LE))
++          else if (comparable(term))
 +          {
-+            // "galaxy <= 1": which values that leaves is only known once every value is.
-+            Constraint c;
-+            c.alts.push_back({AddCandidate(term->operand1), {}});
-+            c.delta = term->operand1.type == RC_OPERAND_DELTA;
-+            const u32 bound = term->operand2.value.num;
-+            c.below = term->oper == RC_OPERATOR_LE && bound != UINT32_MAX ? bound + 1 : bound;
++            // "galaxy <= 1", "stage >= 1 and stage <= 6": which values that leaves is only
++            // known once every value is.
++            const size_t key = AddCandidate(term->operand1);
++            const bool delta = term->operand1.type == RC_OPERAND_DELTA;
++            auto it = std::find_if(bounds.begin(), bounds.end(), [key, delta](const Constraint& c) {
++              return c.alts.front().key == key && c.delta == delta;
++            });
++            if (it == bounds.end())
++            {
++              it = bounds.emplace(bounds.end());
++              it->alts.push_back({key, {}});
++              it->delta = delta;
++            }
++            it->tests.push_back({term->oper, term->operand2.value.num, false});
++          }
++        }
++        // A lower bound by itself is "from here on", which is progress more often than a place.
++        for (Constraint& c : bounds)
++        {
++          if (std::any_of(c.tests.begin(), c.tests.end(), [](const Constraint::Test& t) {
++                return t.oper == RC_OPERATOR_LT || t.oper == RC_OPERATOR_LE;
++              }))
++          {
 +            out.push_back(std::move(c));
 +          }
 +        }
@@ -390,6 +453,23 @@ index 0000000..208eb9e
 +      else if (all_or && all_usable(RC_OPERATOR_EQ))
 +      {
 +        out.push_back(any_of());
++      }
++      else if (std::all_of(terms.begin(), terms.end(), comparable))
++      {
++        // A mix of links over one key: "stage >= 7 and stage <= 12, or stage == 44".
++        Constraint c;
++        c.alts.push_back({AddCandidate(terms.front()->operand1), {}});
++        c.delta = terms.front()->operand1.type == RC_OPERAND_DELTA;
++        bool one_key = true;
++        for (const rc_condition_t* term : terms)
++        {
++          one_key &= AddCandidate(term->operand1) == c.alts.front().key &&
++                     (term->operand1.type == RC_OPERAND_DELTA) == c.delta;
++          c.tests.push_back(
++              {term->oper, term->operand2.value.num, term->type == RC_CONDITION_OR_NEXT});
++        }
++        if (one_key)
++          out.push_back(std::move(c));
 +      }
 +    }
 +    else if (IsNegation(cond->type))
@@ -459,15 +539,26 @@ index 0000000..208eb9e
 +    if (!all_known)
 +      continue;
 +
-+    if (mapped.below)
++    if (!mapped.tests.empty())
 +    {
 +      // A bound on a state flag or a counter says nothing about the place.
 +      Alternative& alt = mapped.alts.front();
 +      if (!m_keys[alt.key].strong)
 +        continue;
-+      for (const u32 value : m_keys[alt.key].values)
++      // Small numbers are tried one by one: a stage in a range need not be named by any other
++      // achievement.
++      ValueSet universe = m_keys[alt.key].values;
++      u32 top = 0;
++      for (const Constraint::Test& test : mapped.tests)
++        top = std::max(top, test.value);
++      if (top < MAX_ENUMERATED_VALUE)
 +      {
-+        if (value < *mapped.below)
++        for (u32 value = 0; value <= top; ++value)
++          universe.insert(value);
++      }
++      for (const u32 value : universe)
++      {
++        if (Passes(mapped.tests, value))
 +          alt.values.insert(value);
 +      }
 +      if (alt.values.empty())
@@ -968,10 +1059,10 @@ index 0000000..208eb9e
 +#endif  // USE_RETRO_ACHIEVEMENTS
 diff --git a/Source/Core/Core/LocationTracker.h b/Source/Core/Core/LocationTracker.h
 new file mode 100644
-index 0000000..0208d5e
+index 0000000..b3cd29e
 --- /dev/null
 +++ b/Source/Core/Core/LocationTracker.h
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,177 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -1074,9 +1165,16 @@ index 0000000..0208d5e
 +    // Came from "reset unless a==x or b==y or ..." with one value per key. Set authors write
 +    // "reset unless the level name is X" this way, splitting the name into 4-byte windows.
 +    bool windows = false;
-+    // "key < below": its single alternative gets the key's known values under the bound once
-+    // the keys are chosen.
-+    std::optional<u32> below;
++    // One key compared with constants, joined left to right the way AndNext/OrNext are:
++    // "stage >= 1 and stage <= 6, or stage == 43". The single alternative gets the values that
++    // pass once the keys are chosen.
++    struct Test
++    {
++      u8 oper;
++      u32 value;
++      bool or_next;
++    };
++    std::vector<Test> tests;
 +    // From a single live condition with no links, hit target or trigger flag.
 +    bool plain = false;
 +  };
