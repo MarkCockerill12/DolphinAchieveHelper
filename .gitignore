@@ -4,3 +4,4 @@
 # Build output, should any end up here
 *.exe
 *.pdb
+scripts/

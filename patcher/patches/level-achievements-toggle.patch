@@ -1,0 +1,333 @@
+diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
+index aba9fcb..4d9f4f0 100644
+--- a/Source/Core/Core/AchievementManager.cpp
++++ b/Source/Core/Core/AchievementManager.cpp
+@@ -346,8 +346,10 @@ void AchievementManager::DoFrame()
+   {
+     std::lock_guard lg{m_lock};
+     rc_client_do_frame(m_client);
+-    // Right after the frame, while the memory rcheevos just read is current.
+-    RetroAchievements::LocationTracker::GetInstance().Update(m_client);
++    // Right after the frame, while the memory rcheevos just read is current. Switched off, it
++    // costs nothing; switched back on, it picks up wherever the player is by then.
++    if (Config::Get(Config::RA_LEVEL_ACHIEVEMENTS_ENABLED))
++      RetroAchievements::LocationTracker::GetInstance().Update(m_client);
+   }
+   auto current_time = std::chrono::steady_clock::now();
+   if (current_time - m_last_rp_time > std::chrono::seconds{10})
+diff --git a/Source/Core/Core/Config/AchievementSettings.cpp b/Source/Core/Core/Config/AchievementSettings.cpp
+index 538461e..a00024c 100644
+--- a/Source/Core/Core/Config/AchievementSettings.cpp
++++ b/Source/Core/Core/Config/AchievementSettings.cpp
+@@ -28,6 +28,11 @@ const Info<bool> RA_DISCORD_PRESENCE_ENABLED{
+     {System::Achievements, "Achievements", "DiscordPresenceEnabled"}, false};
+ const Info<bool> RA_PROGRESS_ENABLED{{System::Achievements, "Achievements", "ProgressEnabled"},
+                                      false};
++const Info<bool> RA_LEVEL_ACHIEVEMENTS_ENABLED{
++    {System::Achievements, "Achievements", "LevelAchievementsEnabled"}, true};
++const Info<LevelAchievementsMode> RA_LEVEL_ACHIEVEMENTS_MODE{
++    {System::Achievements, "Achievements", "LevelAchievementsMode"},
++    LevelAchievementsMode::OnArrival};
+ }  // namespace Config
+ 
+ #endif  // USE_RETRO_ACHIEVEMENTS
+diff --git a/Source/Core/Core/Config/AchievementSettings.h b/Source/Core/Core/Config/AchievementSettings.h
+index c567c55..6091a2a 100644
+--- a/Source/Core/Core/Config/AchievementSettings.h
++++ b/Source/Core/Core/Config/AchievementSettings.h
+@@ -9,6 +9,17 @@
+ 
+ namespace Config
+ {
++// When the list of achievements for the current level is on screen.
++enum class LevelAchievementsMode : int
++{
++  // For a few seconds after arriving somewhere, and while the hotkey is held.
++  OnArrival = 0,
++  // For as long as there is anything to earn here.
++  Always = 1,
++  // Only while the hotkey is held. The challenge indicator labels follow it too.
++  WhileHeld = 2,
++};
++
+ // Configuration Information
+ extern const Info<bool> RA_ENABLED;
+ extern const Info<std::string> RA_USERNAME;
+@@ -22,6 +33,10 @@ extern const Info<bool> RA_LEADERBOARD_TRACKER_ENABLED;
+ extern const Info<bool> RA_CHALLENGE_INDICATORS_ENABLED;
+ extern const Info<bool> RA_DISCORD_PRESENCE_ENABLED;
+ extern const Info<bool> RA_PROGRESS_ENABLED;
++// Turns the level list and the challenge indicator labels off together, leaving Dolphin's own
++// achievement displays as they are.
++extern const Info<bool> RA_LEVEL_ACHIEVEMENTS_ENABLED;
++extern const Info<LevelAchievementsMode> RA_LEVEL_ACHIEVEMENTS_MODE;
+ }  // namespace Config
+ 
+ #endif  // USE_RETRO_ACHIEVEMENTS
+diff --git a/Source/Core/Core/LocationTracker.cpp b/Source/Core/Core/LocationTracker.cpp
+index fe8cd7a..73f6dfe 100644
+--- a/Source/Core/Core/LocationTracker.cpp
++++ b/Source/Core/Core/LocationTracker.cpp
+@@ -14,6 +14,7 @@
+ #include <rcheevos/src/rcheevos/rc_internal.h>
+ 
+ #include "Common/Logging/Log.h"
++#include "Core/Config/AchievementSettings.h"
+ 
+ namespace RetroAchievements
+ {
+@@ -918,6 +919,9 @@ void LocationTracker::Settled(const std::vector<u32>& ids)
+   INFO_LOG_FMT(ACHIEVEMENTS, "Location tracker: {} achievements here [{}]", ids.size(), reading);
+ 
+   m_last_shown = std::set<u32>(ids.begin(), ids.end());
++  // The other modes never time a list: it is either always up or only up on the hotkey.
++  if (Config::Get(Config::RA_LEVEL_ACHIEVEMENTS_MODE) != Config::LevelAchievementsMode::OnArrival)
++    return;
+   const float seconds =
+       std::clamp(BANNER_BASE_SECONDS + BANNER_SECONDS_PER_ENTRY * ids.size(), BANNER_MIN_SECONDS,
+                  BANNER_MAX_SECONDS);
+@@ -930,6 +934,11 @@ void LocationTracker::SetHeld(bool held)
+   m_held.store(held, std::memory_order_relaxed);
+ }
+ 
++bool LocationTracker::IsHeld() const
++{
++  return m_held.load(std::memory_order_relaxed);
++}
++
+ std::optional<LocationTracker::Banner> LocationTracker::GetBanner() const
+ {
+   std::lock_guard lg{m_banner_mutex};
+@@ -945,6 +954,15 @@ std::optional<LocationTracker::Banner> LocationTracker::GetBanner() const
+     held.held = true;
+     return held;
+   }
++  if (Config::Get(Config::RA_LEVEL_ACHIEVEMENTS_MODE) == Config::LevelAchievementsMode::Always &&
++      !m_here.empty())
++  {
++    // Nothing timed is wanted alongside it, including the fade left behind by the hotkey.
++    m_banner.reset();
++    Banner pinned{m_here, now, {}, m_here_serial};
++    pinned.pinned = true;
++    return pinned;
++  }
+   if (m_banner && (m_banner->ids.empty() || now - m_banner->start > m_banner->duration))
+     m_banner.reset();
+   return m_banner;
+diff --git a/Source/Core/Core/LocationTracker.h b/Source/Core/Core/LocationTracker.h
+index b3cd29e..c8d659d 100644
+--- a/Source/Core/Core/LocationTracker.h
++++ b/Source/Core/Core/LocationTracker.h
+@@ -44,6 +44,8 @@ public:
+     u64 serial = 0;
+     // Up because the hotkey is down, not because of the timer; ids may then be empty.
+     bool held = false;
++    // Up because the list is set to always show; drawn without fading.
++    bool pinned = false;
+   };
+ 
+   static LocationTracker& GetInstance();
+@@ -60,6 +62,8 @@ public:
+   // Thread safe. While held, the list for the current place stays up whatever the timer says,
+   // so it can be checked at any moment rather than only on arrival.
+   void SetHeld(bool held);
++  // Thread safe. Whether the hotkey is down right now.
++  bool IsHeld() const;
+ 
+ private:
+   LocationTracker() = default;
+diff --git a/Source/Core/DolphinQt/Achievements/AchievementSettingsWidget.cpp b/Source/Core/DolphinQt/Achievements/AchievementSettingsWidget.cpp
+index 0e4ce1f..91689b7 100644
+--- a/Source/Core/DolphinQt/Achievements/AchievementSettingsWidget.cpp
++++ b/Source/Core/DolphinQt/Achievements/AchievementSettingsWidget.cpp
+@@ -4,6 +4,7 @@
+ #ifdef USE_RETRO_ACHIEVEMENTS
+ #include "DolphinQt/Achievements/AchievementSettingsWidget.h"
+ 
++#include <QHBoxLayout>
+ #include <QLabel>
+ #include <QLineEdit>
+ #include <QPushButton>
+@@ -20,6 +21,7 @@
+ 
+ #include "DolphinQt/Config/ControllerInterface/ControllerInterfaceWindow.h"
+ #include "DolphinQt/Config/ToolTipControls/ToolTipCheckBox.h"
++#include "DolphinQt/Config/ToolTipControls/ToolTipComboBox.h"
+ #include "DolphinQt/QtUtils/ModalMessageBox.h"
+ #include "DolphinQt/QtUtils/SignalBlocking.h"
+ #include "DolphinQt/Settings.h"
+@@ -130,6 +132,31 @@ void AchievementSettingsWidget::CreateLayout()
+       tr("Enable progress notifications on achievements.<br><br>Displays a brief popup message "
+          "whenever the player makes progress on an achievement that tracks an accumulated value, "
+          "such as 60 out of 120 stars."));
++  m_level_achievements_enabled_input =
++      new ToolTipCheckBox(tr("Show Level Achievements and Challenge Labels"));
++  m_level_achievements_enabled_input->SetDescription(
++      tr("Show the on-screen list of achievements that can be earned in the current level, and "
++         "the name and description next to each challenge indicator.<br><br>Off, neither is "
++         "shown and the challenge indicators are plain badges again. Dolphin's own achievement "
++         "displays are not affected."));
++  m_level_achievements_mode_label = new QLabel(tr("Show Level List:"));
++  m_level_achievements_mode_input = new ToolTipComboBox();
++  // Same order as Config::LevelAchievementsMode.
++  m_level_achievements_mode_input->addItem(tr("When Entering a Level"));
++  m_level_achievements_mode_input->addItem(tr("Always"));
++  m_level_achievements_mode_input->addItem(tr("Only While Hotkey Is Held"));
++  m_level_achievements_mode_input->SetTitle(tr("Show Level List"));
++  m_level_achievements_mode_input->SetDescription(
++      tr("When the list of achievements for the current level is on screen.<br><br>"
++         "<b>When Entering a Level</b>: for a few seconds after arriving somewhere new.<br>"
++         "<b>Always</b>: for as long as there is something to earn where you are.<br>"
++         "<b>Only While Hotkey Is Held</b>: only while the Show Level Achievements hotkey is "
++         "down; the challenge indicator labels also only show then.<br><br>In every mode, "
++         "holding the hotkey shows the list."));
++  auto* level_mode_layout = new QHBoxLayout();
++  level_mode_layout->addWidget(m_level_achievements_mode_label);
++  level_mode_layout->addWidget(m_level_achievements_mode_input);
++  level_mode_layout->addStretch();
+ 
+   m_common_layout->addWidget(m_common_integration_enabled_input);
+   m_common_layout->addWidget(m_common_username_label);
+@@ -153,6 +180,8 @@ void AchievementSettingsWidget::CreateLayout()
+   m_common_layout->addWidget(m_common_leaderboard_tracker_enabled_input);
+   m_common_layout->addWidget(m_common_challenge_indicators_enabled_input);
+   m_common_layout->addWidget(m_common_progress_enabled_input);
++  m_common_layout->addWidget(m_level_achievements_enabled_input);
++  m_common_layout->addLayout(level_mode_layout);
+ 
+   m_common_layout->setAlignment(Qt::AlignTop);
+   setLayout(m_common_layout);
+@@ -180,6 +209,10 @@ void AchievementSettingsWidget::ConnectWidgets()
+           &AchievementSettingsWidget::ToggleDiscordPresence);
+   connect(m_common_progress_enabled_input, &QCheckBox::toggled, this,
+           &AchievementSettingsWidget::ToggleProgress);
++  connect(m_level_achievements_enabled_input, &QCheckBox::toggled, this,
++          &AchievementSettingsWidget::ToggleLevelAchievements);
++  connect(m_level_achievements_mode_input, &QComboBox::currentIndexChanged, this,
++          &AchievementSettingsWidget::SetLevelAchievementsMode);
+ }
+ 
+ void AchievementSettingsWidget::OnControllerInterfaceConfigure()
+@@ -251,6 +284,14 @@ void AchievementSettingsWidget::LoadSettings()
+   SignalBlocking(m_common_progress_enabled_input)
+       ->setChecked(Config::Get(Config::RA_PROGRESS_ENABLED));
+   SignalBlocking(m_common_progress_enabled_input)->setEnabled(enabled);
++
++  const bool level_enabled = Config::Get(Config::RA_LEVEL_ACHIEVEMENTS_ENABLED);
++  SignalBlocking(m_level_achievements_enabled_input)->setChecked(level_enabled);
++  SignalBlocking(m_level_achievements_enabled_input)->setEnabled(enabled);
++  SignalBlocking(m_level_achievements_mode_input)
++      ->setCurrentIndex(static_cast<int>(Config::Get(Config::RA_LEVEL_ACHIEVEMENTS_MODE)));
++  m_level_achievements_mode_label->setEnabled(enabled && level_enabled);
++  SignalBlocking(m_level_achievements_mode_input)->setEnabled(enabled && level_enabled);
+ }
+ 
+ void AchievementSettingsWidget::SaveSettings()
+@@ -273,6 +314,11 @@ void AchievementSettingsWidget::SaveSettings()
+                            m_common_discord_presence_enabled_input->isChecked());
+   Config::SetBaseOrCurrent(Config::RA_PROGRESS_ENABLED,
+                            m_common_progress_enabled_input->isChecked());
++  Config::SetBaseOrCurrent(Config::RA_LEVEL_ACHIEVEMENTS_ENABLED,
++                           m_level_achievements_enabled_input->isChecked());
++  Config::SetBaseOrCurrent(Config::RA_LEVEL_ACHIEVEMENTS_MODE,
++                           static_cast<Config::LevelAchievementsMode>(
++                               m_level_achievements_mode_input->currentIndex()));
+   Config::Save();
+ }
+ 
+@@ -361,4 +407,14 @@ void AchievementSettingsWidget::ToggleProgress()
+   SaveSettings();
+ }
+ 
++void AchievementSettingsWidget::ToggleLevelAchievements()
++{
++  SaveSettings();
++}
++
++void AchievementSettingsWidget::SetLevelAchievementsMode()
++{
++  SaveSettings();
++}
++
+ #endif  // USE_RETRO_ACHIEVEMENTS
+diff --git a/Source/Core/DolphinQt/Achievements/AchievementSettingsWidget.h b/Source/Core/DolphinQt/Achievements/AchievementSettingsWidget.h
+index 2a7586a..305f547 100644
+--- a/Source/Core/DolphinQt/Achievements/AchievementSettingsWidget.h
++++ b/Source/Core/DolphinQt/Achievements/AchievementSettingsWidget.h
+@@ -12,6 +12,7 @@ class QLabel;
+ class QLineEdit;
+ class QPushButton;
+ class ToolTipCheckBox;
++class ToolTipComboBox;
+ 
+ class AchievementSettingsWidget final : public QWidget
+ {
+@@ -40,6 +41,8 @@ private:
+   void ToggleChallengeIndicators();
+   void ToggleDiscordPresence();
+   void ToggleProgress();
++  void ToggleLevelAchievements();
++  void SetLevelAchievementsMode();
+ 
+   QGroupBox* m_common_box;
+   QVBoxLayout* m_common_layout;
+@@ -59,6 +62,9 @@ private:
+   ToolTipCheckBox* m_common_challenge_indicators_enabled_input;
+   ToolTipCheckBox* m_common_discord_presence_enabled_input;
+   ToolTipCheckBox* m_common_progress_enabled_input;
++  ToolTipCheckBox* m_level_achievements_enabled_input;
++  QLabel* m_level_achievements_mode_label;
++  ToolTipComboBox* m_level_achievements_mode_input;
+ };
+ 
+ #endif  // USE_RETRO_ACHIEVEMENTS
+diff --git a/Source/Core/VideoCommon/OnScreenUI.cpp b/Source/Core/VideoCommon/OnScreenUI.cpp
+index 0677854..5307467 100644
+--- a/Source/Core/VideoCommon/OnScreenUI.cpp
++++ b/Source/Core/VideoCommon/OnScreenUI.cpp
+@@ -387,10 +387,25 @@ void OnScreenUI::DrawChallengesAndLeaderboards()
+     {
+       // Each active challenge gets a row: badge, then its name and how to earn it.
+       // Without the text the indicator is just an unlabelled icon.
++      // The labels are switched off with the level list, and in hotkey-only mode they show
++      // only while it is held.
++      const bool labelled =
++          Config::Get(Config::RA_LEVEL_ACHIEVEMENTS_ENABLED) &&
++          (Config::Get(Config::RA_LEVEL_ACHIEVEMENTS_MODE) !=
++               Config::LevelAchievementsMode::WhileHeld ||
++           RetroAchievements::LocationTracker::GetInstance().IsHeld());
+       const float text_width = 22.0f * ImGui::GetFontSize();
+       bool first_row = true;
+       for (auto& [id, texture] : m_challenge_texture_map)
+       {
++        if (!labelled)
++        {
++          // Dolphin's own layout: bare badges side by side.
++          ImGui::Image(*texture.get(), ImVec2(static_cast<float>(texture->GetWidth()) * scale,
++                                              static_cast<float>(texture->GetHeight()) * scale));
++          ImGui::SameLine();
++          continue;
++        }
+         if (!first_row)
+           ImGui::Spacing();
+         first_row = false;
+@@ -454,7 +469,9 @@ void OnScreenUI::DrawLevelAchievements(float bottom_y)
+   constexpr float FADE_OUT_SECONDS = 1.0f;
+   constexpr size_t MAX_ROWS = 8;
+ 
+-  const auto banner = RetroAchievements::LocationTracker::GetInstance().GetBanner();
++  const auto banner = Config::Get(Config::RA_LEVEL_ACHIEVEMENTS_ENABLED) ?
++                         RetroAchievements::LocationTracker::GetInstance().GetBanner() :
++                         std::nullopt;
+   if (!banner)
+   {
+     if (!m_level_texture_map.empty())
+@@ -490,7 +507,7 @@ void OnScreenUI::DrawLevelAchievements(float bottom_y)
+   const float elapsed =
+       std::chrono::duration<float>(std::chrono::steady_clock::now() - banner->start).count();
+   const float alpha =
+-      banner->held ? 1.0f :
++      banner->held || banner->pinned ? 1.0f :
+                      std::clamp(std::min(elapsed / FADE_IN_SECONDS,
+                                          (banner->duration.count() - elapsed) / FADE_OUT_SECONDS),
+                                 0.0f, 1.0f);

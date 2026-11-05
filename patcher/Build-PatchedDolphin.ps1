@@ -62,7 +62,7 @@ function Invoke-Native([string]$What, [scriptblock]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "$What failed (exit code $LASTEXITCODE)." }
 }
 
-$patches = @('challenge-details.patch', 'level-banner.patch') | ForEach-Object { Join-Path $here "patches\$_" }
+$patches = @('challenge-details.patch', 'level-banner.patch', 'level-achievements-toggle.patch') | ForEach-Object { Join-Path $here "patches\$_" }
 # Only for Dolphin versions that are still built from Visual Studio project files (up to 2606a):
 # it adds the new source files to those projects. Later versions are built with CMake, which
 # level-banner.patch itself covers.

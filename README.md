@@ -13,6 +13,10 @@ keep it pressed.
 It also puts the name and unlock condition next to Dolphin's challenge indicators, the
 bare badges Dolphin shows while a timed or no-damage challenge is running.
 
+Prefer it out of the way? You can keep the list up all the time, show it only while the key
+is held, or switch the whole thing off from Dolphin's achievement settings; see
+[Turning it on and off](#turning-it-on-and-off).
+
 It is drawn by Dolphin's own on-screen display, so it works in windowed mode, fullscreen and
 exclusive fullscreen alike. Nothing extra runs alongside Dolphin.
 
@@ -50,7 +54,22 @@ You need Windows 10 or 11 (64-bit), an internet connection and about 5 GB of fre
 
 Make sure *Config > Interface > Show On-Screen Display Messages* is on, because the list is
 an on-screen message. For the labelled challenge indicators, also keep
-*Tools > Achievements > Enable Challenge Indicators* on.
+*Tools > Achievements > Show Challenge Indicators* on.
+
+### Turning it on and off
+
+Under *Tools > Achievements*, at the bottom of *Display Settings*:
+
+- **Show Level Achievements and Challenge Labels** turns everything this adds on or off at
+  once: the level list and the labels next to the challenge indicators. Dolphin's own
+  achievement displays (challenge badges, leaderboard tracker, popups) are not affected.
+- **Show Level List** picks when the list appears:
+  - *When Entering a Level* (default): for a few seconds after arriving somewhere new.
+  - *Always*: for as long as there is something to earn where you are.
+  - *Only While Hotkey Is Held*: only while the *Show Level Achievements* hotkey is down
+    (apostrophe by default). The challenge labels also show only then.
+
+  In every mode, holding the hotkey shows the list.
 
 ### Updating Dolphin
 
@@ -150,6 +169,7 @@ which version is needed and leaves your install alone. Updating Visual Studio fr
 |---|---|
 | `patches/challenge-details.patch` | Draws the title and description next to each challenge indicator. |
 | `patches/level-banner.patch` | Adds `Core/LocationTracker`, which works out which achievements belong where you are, and draws the list. Adds the hotkey that holds it up. |
+| `patches/level-achievements-toggle.patch` | Adds the settings that turn the list and labels off and choose when the list shows. |
 | `patches/level-banner-msbuild.patch` | Applied only to Dolphin 2606a and older: adds the new files to the Visual Studio projects those versions are built from. |
 
 ### Working out where you are
